@@ -1,6 +1,6 @@
 # SillyTavern Launcher
 
-**Just want to install SillyTavern?** Go to **https://trevorbrown-dev.github.io/sillytavern-launcher/** and click the big button. The rest of this page is for people building the launcher.
+**Just want to install SillyTavern?** Go to **https://trevorbrown.dev/gh/sillytavern-launcher** and click the big button. The rest of this page is for people building the launcher.
 
 A single Windows `.exe` that installs SillyTavern end to end for someone who has never opened a terminal, then stays around as the thing they double-click to run it. Built for friends coming over from JanitorAI who mostly want to use it from their phone.
 
