@@ -4,9 +4,11 @@
 //! and then acts as the tray launcher for everyday use.
 
 mod archive;
+mod awake;
 mod cli;
 mod commands;
 mod config;
+mod diagnose;
 mod discover;
 mod download;
 mod firewall;

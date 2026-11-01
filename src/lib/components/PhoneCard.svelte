@@ -1,15 +1,24 @@
 <script lang="ts">
-  import { api, errorText, type PhoneInfo, type Settings } from "../api";
+  import { api, errorText, type StatusInfo } from "../api";
   import { app } from "../store.svelte";
 
-  let { phone, settings }: { phone: PhoneInfo; settings: Settings } = $props();
+  let { status }: { status: StatusInfo } = $props();
 
+  let phone = $derived(status.phone);
+  let settings = $derived(status.settings);
+  let server = $derived(status.server);
+  let connections = $derived(status.connections);
   let toggling = $state(false);
 
-  let extras = $derived([
-    ...phone.alternatives,
-    ...(phone.hostnameUrl ? [`${phone.hostnameUrl} (works on iPhone and most Android phones)`] : []),
-  ]);
+  /** The blocked attempt matters only if it is the latest thing that happened. */
+  let showBlocked = $derived.by(() => {
+    const b = connections.lastBlocked;
+    if (!b) return false;
+    const r = connections.lastRemote;
+    return !r || b.at >= r.at;
+  });
+
+  const LEVEL_GLYPH: Record<string, string> = { ok: "✓", info: "i", warn: "!", fail: "✕" };
 
   async function toggleLan(ev: Event) {
     const input = ev.currentTarget as HTMLInputElement;
@@ -35,19 +44,31 @@
       app.showToast("Select the address and copy it");
     }
   }
-
-  async function firewall() {
-    try {
-      app.showToast(await api.addFirewallRule());
-    } catch (e) {
-      app.showToast(errorText(e));
-    }
-  }
 </script>
 
 <div class="card">
   <h3>On your phone</h3>
   {#if settings.lanEnabled}
+    {#if server.external}
+      <div class="notice warn">
+        <div>
+          <strong>SillyTavern is running outside the launcher</strong> (Start.bat or an old shortcut), so phone
+          access depends on that copy's own settings and usually does not work.
+        </div>
+        <button class="btn primary small" onclick={() => app.takeOver()}>Restart under the launcher</button>
+      </div>
+    {/if}
+    {#if !status.firewallRule}
+      <div class="notice warn">
+        <div>
+          <strong>Windows hasn't been told to allow phones yet.</strong> One admin prompt fixes that.
+        </div>
+        <button class="btn primary small" onclick={() => app.applyFix("firewall")} disabled={app.fixing !== null}>
+          Allow
+        </button>
+      </div>
+    {/if}
+
     <div class="layout">
       <div class="qr">
         {#if phone.qrSvg}
@@ -66,24 +87,74 @@
       <code>{phone.url ?? "No Wi-Fi address found"}</code>
       <button class="btn small" disabled={!phone.url} onclick={copyUrl}>Copy</button>
     </div>
-    {#if extras.length}
-      <p class="tiny">If that one doesn't work, try: {extras.join("  ·  ")}</p>
+    {#if phone.adapter || phone.vpnActive}
+      <p class="tiny">
+        {#if phone.vpnActive}
+          A VPN or virtual network adapter is active; the address above is your <strong>{phone.adapter}</strong>
+          one, which is the one phones can reach.
+        {:else if phone.adapter}
+          via {phone.adapter}
+        {/if}
+      </p>
     {/if}
+    {#if phone.alternatives.length || phone.hostnameUrl}
+      <p class="tiny">
+        If that one doesn't work, try:
+        {#each phone.alternatives as alt (alt.url)}
+          <span class="alt">{alt.url} <em>({alt.adapter})</em></span>
+        {/each}
+        {#if phone.hostnameUrl}
+          <span class="alt">{phone.hostnameUrl} <em>(iPhone and most Android phones)</em></span>
+        {/if}
+      </p>
+    {/if}
+
+    {#if showBlocked && connections.lastBlocked}
+      <div class="notice warn">
+        <div>
+          <strong>{connections.lastBlocked.device} at {connections.lastBlocked.ip}</strong> tried to connect at
+          {connections.lastBlocked.at} and was turned away by the whitelist.
+        </div>
+        <button class="btn primary small" onclick={() => app.allowIp(connections.lastBlocked!.ip)}>Allow it</button>
+      </div>
+    {:else if connections.lastRemote}
+      <p class="tiny ok">
+        {"✓"} Your {connections.lastRemote.device} connected at {connections.lastRemote.at} ({connections.lastRemote.ip}).
+      </p>
+    {/if}
+
     <p class="tiny">
       Then use <em>Share &rarr; Add to Home Screen</em> (iPhone) or <em>&#8942; &rarr; Add to Home screen</em>
-      (Android) so it opens like an app. This PC has to be on and awake, and SillyTavern has to be running.
+      (Android) so it opens like an app. This PC has to be on, and SillyTavern has to be running.
     </p>
-    <details class="help">
-      <summary>It doesn't load on my phone</summary>
-      <ul class="tiny">
-        <li>Both devices on the same Wi-Fi? Guest networks and mobile data won't work.</li>
-        <li>
-          If Windows showed an "allow Node.js" firewall prompt, it needs Allow.
-          <button class="link" onclick={firewall}>Re-run the firewall step</button>.
-        </li>
-        <li>Some routers block devices from talking to each other ("AP isolation"); check the router settings.</li>
-      </ul>
-    </details>
+
+    <div class="diagnose">
+      <div class="row">
+        <span class="muted small">Not loading on the phone?</span>
+        <button class="btn small" onclick={() => app.runDiagnosis()} disabled={app.diagnosing}>
+          {app.diagnosing ? "Checking..." : "Check what's wrong"}
+        </button>
+      </div>
+      {#if app.diagnosis}
+        <ul class="checks">
+          {#each app.diagnosis.checks as c (c.id)}
+            <li class="check {c.level}">
+              <span class="glyph">{LEVEL_GLYPH[c.level]}</span>
+              <div class="text">
+                <strong>{c.title}</strong>
+                {#if c.detail}<span>{c.detail}</span>{/if}
+              </div>
+              {#if c.fix && c.fixLabel}
+                <button class="btn primary small" onclick={() => app.applyFix(c.fix!)} disabled={app.fixing !== null}>
+                  {app.fixing === c.fix ? "Working..." : c.fixLabel}
+                </button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+        <p class="tiny summary">{app.diagnosis.summary}</p>
+      {/if}
+    </div>
   {:else}
     <p class="muted">Phone access is off. SillyTavern only answers on this PC.</p>
   {/if}
@@ -154,20 +225,124 @@
     font-weight: 600;
     color: var(--accent-hover);
     user-select: all;
+    word-break: break-all;
   }
 
-  .help {
-    margin-top: 10px;
+  .alt {
+    display: inline-block;
+    margin-right: 10px;
   }
 
-  .help summary {
-    cursor: pointer;
-    font-size: 12.5px;
+  .alt em {
     color: var(--muted);
+    opacity: 0.8;
   }
 
-  .help ul {
-    margin: 6px 0 0;
-    padding-left: 18px;
+  .notice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 13.5px;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .notice.warn {
+    border-color: rgba(245, 196, 81, 0.45);
+    background: rgba(245, 196, 81, 0.08);
+  }
+
+  .notice strong {
+    color: var(--text);
+  }
+
+  .notice + .layout {
+    margin-top: 4px;
+  }
+
+  .tiny.ok {
+    color: var(--ok);
+  }
+
+  .diagnose {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .checks {
+    list-style: none;
+    margin: 10px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .check {
+    display: grid;
+    grid-template-columns: 22px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 6px 8px;
+    border-radius: 8px;
+    font-size: 13.5px;
+  }
+
+  .check .text {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .check .text span {
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+
+  .glyph {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: #0d2a16;
+    background: var(--ok);
+  }
+
+  .check.info .glyph {
+    background: var(--border);
+    color: var(--text);
+  }
+
+  .check.warn .glyph {
+    background: var(--warn);
+    color: #2a1a08;
+  }
+
+  .check.fail .glyph {
+    background: var(--err);
+    color: #2a0d0d;
+  }
+
+  .check.fail {
+    background: rgba(255, 114, 114, 0.08);
+  }
+
+  .summary {
+    margin-top: 10px;
   }
 </style>

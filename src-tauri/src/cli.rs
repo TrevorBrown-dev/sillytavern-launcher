@@ -118,6 +118,50 @@ pub fn run(args: &[String]) -> i32 {
             Ok(())
         }
         "start" => start_foreground(&paths, job),
+        "takeover" => {
+            let settings = LauncherState::load(&base).settings;
+            let server = Arc::new(ServerManager::new(job, settings.port));
+            server.set_notifier(Box::new(|s| {
+                println!("[server] {:?} {} {}", s.state, s.url, s.message.unwrap_or_default());
+            }));
+            server.take_over(&paths, &settings).and_then(|()| {
+                loop {
+                    std::thread::sleep(Duration::from_millis(500));
+                    match server.status().state {
+                        ServerState::Running => {
+                            println!("Running under the launcher now (stopping again since this is the CLI).");
+                            break;
+                        }
+                        ServerState::Error | ServerState::Stopped => break,
+                        ServerState::Starting => {}
+                    }
+                }
+                server.stop()
+            })
+        }
+        "diagnose" => {
+            let settings = LauncherState::load(&base).settings;
+            let server = crate::server::ServerStatus {
+                state: if net::port_open(settings.port) {
+                    crate::server::ServerState::Running
+                } else {
+                    crate::server::ServerState::Stopped
+                },
+                url: crate::server::local_url(settings.port),
+                message: None,
+                pid: None,
+                external: net::port_open(settings.port),
+            };
+            let d = crate::diagnose::run(&paths, &settings, &server);
+            for c in &d.checks {
+                println!("[{:<4}] {}{}", format!("{:?}", c.level).to_ascii_lowercase(), c.title, if c.detail.is_empty() { String::new() } else { format!(" -- {}", c.detail) });
+                if let Some(fix) = &c.fix {
+                    println!("        fix: {fix}");
+                }
+            }
+            println!("{}", d.summary);
+            Ok(())
+        }
         "status" => {
             let st = LauncherState::load(&base);
             println!("home:        {}", paths.home.display());
@@ -134,7 +178,7 @@ pub fn run(args: &[String]) -> i32 {
         _ => {
             println!("SillyTavern Launcher {}", selfupdate::CURRENT_VERSION);
             println!("usage: --cli install [--adopt <folder>] [--no-lan] [--no-shortcut] [--no-firewall]");
-            println!("       --cli update | check-update | self-update [--force] | discover | start | status");
+            println!("       --cli update | check-update | self-update [--force] | discover | diagnose | takeover | start | status");
             println!("env:   STLAUNCHER_HOME overrides the launcher folder");
             Ok(())
         }

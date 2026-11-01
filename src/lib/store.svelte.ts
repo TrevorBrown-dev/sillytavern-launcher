@@ -5,6 +5,8 @@ import {
   api,
   errorText,
   events,
+  type Diagnosis,
+  type FixId,
   type InstallOptions,
   type ServerStatus,
   type StatusInfo,
@@ -66,6 +68,9 @@ class AppStore {
   updates = $state<UpdateReport | null>(null);
   updatesDismissed = $state(false);
   checkingUpdates = $state(false);
+  diagnosis = $state<Diagnosis | null>(null);
+  diagnosing = $state(false);
+  fixing = $state<FixId | null>(null);
   lastInstallOptions = $state<InstallOptions>({
     lanEnabled: true,
     createShortcut: true,
@@ -91,6 +96,19 @@ class AppStore {
       this.#lastServerEventAt = Date.now();
       if (this.status) this.status.server = server;
       api.uiLog(`server-event: ${server.state}`);
+    });
+    await events.onConnection((ev) => {
+      if (this.status) {
+        if (ev.blocked) this.status.connections.lastBlocked = ev;
+        else this.status.connections.lastRemote = ev;
+      }
+      api.uiLog(`connection-event: ${ev.blocked ? "blocked" : "ok"} ${ev.ip} (${ev.device})`);
+      this.showToast(
+        ev.blocked
+          ? `${ev.device} at ${ev.ip} tried to connect and was blocked. See "On your phone".`
+          : `Your ${ev.device} connected.`,
+        ev.blocked ? 6000 : 3500,
+      );
     });
     await events.onLog((line) => this.appendLog(line));
     await events.onUpdates((report) => {
@@ -118,10 +136,26 @@ class AppStore {
       }
       api.uiLog(`status: installed=${status.installed} busy=${status.busy} server=${status.server.state}`);
       this.status = status;
-      // Window reopened mid-task: the step list is gone, so show a neutral task screen.
-      if (status.busy && !this.task) this.beginTask("install");
+      // Window reopened mid-task: rebuild the step list from the Rust-side snapshot.
+      if (status.busy && !this.task) this.restoreTask(status);
     } catch (e) {
       this.showToast(`Could not read status: ${errorText(e)}`);
+    }
+  }
+
+  restoreTask(status: StatusInfo) {
+    const kind = status.task.task ?? "install";
+    this.beginTask(kind);
+    for (const snap of status.task.steps) {
+      const step = this.steps.find((s) => s.id === snap.step);
+      if (step) {
+        step.status = snap.status;
+        step.detail = snap.detail;
+      }
+    }
+    if (status.task.progress) {
+      const p = status.task.progress;
+      this.progress = { done: p.done, total: p.total, unit: p.unit };
     }
   }
 
@@ -147,6 +181,23 @@ class AppStore {
     this.beginTask("install");
     try {
       await api.startInstall(options);
+    } catch (e) {
+      this.failTask(errorText(e));
+    }
+  }
+
+  /** Re-runs setup for the current install; fixes half-finished installs in place. */
+  async repairInstall() {
+    const s = this.status;
+    this.lastInstallOptions = {
+      lanEnabled: s?.settings.lanEnabled ?? true,
+      createShortcut: true,
+      addFirewallRule: s?.settings.lanEnabled ?? true,
+      adoptPath: s?.mode === "adopted" ? s.stDir : null,
+    };
+    this.beginTask("install");
+    try {
+      await api.repairInstall();
     } catch (e) {
       this.failTask(errorText(e));
     }
@@ -193,6 +244,69 @@ class AppStore {
     }
   }
 
+  // ---------- phone access helpers ----------
+
+  async runDiagnosis() {
+    this.diagnosing = true;
+    try {
+      this.diagnosis = await api.diagnosePhone();
+    } catch (e) {
+      this.showToast(`Could not run the check: ${errorText(e)}`);
+    } finally {
+      this.diagnosing = false;
+    }
+  }
+
+  /** Runs one of the fixes the diagnosis offers, then re-checks. */
+  async applyFix(fix: FixId) {
+    this.fixing = fix;
+    try {
+      switch (fix) {
+        case "lan":
+          this.status = await api.setLanEnabled(true);
+          break;
+        case "start":
+          await api.startServer();
+          await new Promise((r) => setTimeout(r, 4000));
+          break;
+        case "takeover":
+          await api.takeOverServer();
+          await new Promise((r) => setTimeout(r, 4000));
+          break;
+        case "firewall":
+          this.showToast(await api.fixFirewall(), 5000);
+          break;
+        case "whitelist":
+          this.status = await api.fixWhitelist();
+          break;
+      }
+      await this.refreshStatus();
+      await this.runDiagnosis();
+    } catch (e) {
+      this.showToast(errorText(e), 6000);
+    } finally {
+      this.fixing = null;
+    }
+  }
+
+  async takeOver() {
+    try {
+      await api.takeOverServer();
+      this.showToast("Restarting SillyTavern under the launcher...");
+    } catch (e) {
+      this.showToast(errorText(e), 6000);
+    }
+  }
+
+  async allowIp(ip: string) {
+    try {
+      this.status = await api.allowIp(ip);
+      this.showToast(`${ip} is now allowed. Try again on the phone.`, 5000);
+    } catch (e) {
+      this.showToast(errorText(e), 6000);
+    }
+  }
+
   handleTaskEvent(e: TaskEvent) {
     if (e.kind === "step") {
       const step = this.steps.find((s) => s.id === e.step);
@@ -216,6 +330,7 @@ class AppStore {
       );
       this.task = null;
       this.updates = null;
+      this.diagnosis = null;
       void this.refreshStatus();
     } else {
       this.failTask(e.error ?? "Unknown error");

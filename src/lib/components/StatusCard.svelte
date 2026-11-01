@@ -18,7 +18,7 @@
       case "starting":
         return "Waiting for SillyTavern to answer. First start can take a minute.";
       case "running":
-        return server.external ? `Already running at ${server.url}` : `Open at ${server.url}`;
+        return server.external ? `Running outside the launcher at ${server.url}` : `Open at ${server.url}`;
       case "error":
         return "SillyTavern could not start.";
     }
@@ -44,6 +44,9 @@
   {#if server.state === "error" && server.message}
     <pre class="message">{server.message}</pre>
   {/if}
+  {#if server.state === "running" && server.external && server.message}
+    <p class="tiny">{server.message}</p>
+  {/if}
   <div class="actions">
     <button class="btn primary" disabled={server.state !== "running"} onclick={() => run(api.openBrowser)}>
       Open SillyTavern
@@ -55,13 +58,14 @@
     >
       Start
     </button>
-    <button
-      class="btn"
-      disabled={server.state === "stopped" || (server.external && server.state === "running")}
-      onclick={() => run(api.stopServer)}
-    >
-      Stop
-    </button>
+    {#if server.external && server.state === "running"}
+      <button class="btn" onclick={() => app.takeOver()}>Restart under the launcher</button>
+    {:else}
+      <button class="btn" disabled={server.state === "stopped"} onclick={() => run(api.stopServer)}>Stop</button>
+    {/if}
+    {#if server.state === "error"}
+      <button class="btn" onclick={() => app.repairInstall()}>Repair installation</button>
+    {/if}
   </div>
   <p class="tiny">
     Closing this window keeps SillyTavern running in the tray (bottom-right by the clock). Use Quit to stop it.

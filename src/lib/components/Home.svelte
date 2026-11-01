@@ -16,7 +16,7 @@
         <MaintenanceCard status={app.status} />
       </div>
       <div class="column">
-        <PhoneCard phone={app.status.phone} settings={app.status.settings} />
+        <PhoneCard status={app.status} />
       </div>
     </div>
     <LogPanel label="Log" />

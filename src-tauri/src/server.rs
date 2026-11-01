@@ -1,4 +1,5 @@
-//! Runs `node server.js` without a console, tracks readiness, and tears it down.
+//! Runs `node server.js` without a console, tracks readiness, reads its log for
+//! phone connections, and tears it down.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
@@ -9,10 +10,10 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
+use crate::net;
 use crate::paths::Paths;
 use crate::process::{self, JobObject};
 use crate::state::Settings;
-use crate::net;
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -34,10 +35,33 @@ pub struct ServerStatus {
     pub external: bool,
 }
 
+/// A client SillyTavern reported in its log ("New connection from ..." / "Blocked ...").
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionEvent {
+    pub ip: String,
+    pub user_agent: String,
+    pub blocked: bool,
+    /// Local wall-clock time, "15:42".
+    pub at: String,
+    /// "iPhone", "iPad", "Android phone", "another device"
+    pub device: String,
+}
+
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Connections {
+    /// Most recent accepted connection from something other than this PC.
+    pub last_remote: Option<ConnectionEvent>,
+    /// Most recent connection the whitelist rejected.
+    pub last_blocked: Option<ConnectionEvent>,
+}
+
 pub const READY_TIMEOUT: Duration = Duration::from_secs(180);
 const TAIL_LINES: usize = 12;
 
 type Notifier = Box<dyn Fn(ServerStatus) + Send + Sync>;
+type ConnectionNotifier = Box<dyn Fn(ConnectionEvent) + Send + Sync>;
 
 struct Inner {
     child: Option<Child>,
@@ -50,6 +74,8 @@ pub struct ServerManager {
     inner: Mutex<Inner>,
     job: Option<Arc<JobObject>>,
     notifier: Mutex<Option<Notifier>>,
+    connections: Mutex<Connections>,
+    connection_notifier: Mutex<Option<ConnectionNotifier>>,
 }
 
 pub fn local_url(port: u16) -> String {
@@ -72,6 +98,8 @@ impl ServerManager {
             }),
             job,
             notifier: Mutex::new(None),
+            connections: Mutex::new(Connections::default()),
+            connection_notifier: Mutex::new(None),
         }
     }
 
@@ -79,8 +107,16 @@ impl ServerManager {
         *self.notifier.lock().unwrap() = Some(f);
     }
 
+    pub fn set_connection_notifier(&self, f: ConnectionNotifier) {
+        *self.connection_notifier.lock().unwrap() = Some(f);
+    }
+
     pub fn status(&self) -> ServerStatus {
         self.inner.lock().unwrap().status.clone()
+    }
+
+    pub fn connections(&self) -> Connections {
+        self.connections.lock().unwrap().clone()
     }
 
     pub fn is_up(&self) -> bool {
@@ -108,6 +144,20 @@ impl ServerManager {
         });
     }
 
+    fn record_connection(&self, event: ConnectionEvent) {
+        {
+            let mut c = self.connections.lock().unwrap();
+            if event.blocked {
+                c.last_blocked = Some(event.clone());
+            } else {
+                c.last_remote = Some(event.clone());
+            }
+        }
+        if let Some(n) = self.connection_notifier.lock().unwrap().as_ref() {
+            n(event);
+        }
+    }
+
     /// Starts SillyTavern unless it is already up. Returns as soon as the process is
     /// spawned; `Running` arrives through the notifier once the port answers.
     pub fn start(self: &Arc<Self>, paths: &Paths, settings: &Settings) -> Result<()> {
@@ -129,7 +179,7 @@ impl ServerManager {
                     state: ServerState::Running,
                     url,
                     message: Some(
-                        "SillyTavern was already running (started outside the launcher, e.g. with Start.bat). Close that one if you want the launcher to manage it."
+                        "SillyTavern was already running (started outside the launcher, e.g. with Start.bat). Phone access then depends on that copy's own settings."
                             .to_string(),
                     ),
                     pid: None,
@@ -157,9 +207,10 @@ impl ServerManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         log::info!(
-            "starting SillyTavern on port {} (lan={})",
+            "starting SillyTavern on port {} (lan={}) from {}",
             settings.port,
-            settings.lan_enabled
+            settings.lan_enabled,
+            st_dir.display()
         );
         let mut child = cmd
             .spawn()
@@ -185,16 +236,55 @@ impl ServerManager {
 
         let tail = Arc::new(Mutex::new(VecDeque::with_capacity(TAIL_LINES)));
         if let Some(out) = stdout {
-            spawn_tail_logger(out, "ST", Arc::clone(&tail));
+            spawn_tail_logger(out, "ST", Arc::clone(&tail), Arc::clone(self));
         }
         if let Some(err) = stderr {
-            spawn_tail_logger(err, "ST!", Arc::clone(&tail));
+            spawn_tail_logger(err, "ST!", Arc::clone(&tail), Arc::clone(self));
         }
 
         let me = Arc::clone(self);
         let port = settings.port;
         std::thread::spawn(move || me.watch_startup(generation, port, url, tail));
         Ok(())
+    }
+
+    /// Closes a SillyTavern that was started outside the launcher (only ever a node.exe
+    /// holding the port) and starts ours in its place.
+    pub fn take_over(self: &Arc<Self>, paths: &Paths, settings: &Settings) -> Result<()> {
+        let listeners = net::listeners_on_port(settings.port);
+        let mut killed = 0;
+        for l in &listeners {
+            match l.process.as_deref() {
+                Some(p) if p.eq_ignore_ascii_case("node.exe") => {
+                    log::info!("closing node.exe pid {} that holds port {}", l.pid, settings.port);
+                    net::kill_pid(l.pid)?;
+                    killed += 1;
+                }
+                Some(p) => bail!(
+                    "Port {} is used by {p}, which is not SillyTavern. Close that program and try again.",
+                    settings.port
+                ),
+                None => bail!(
+                    "Port {} is used by another program (pid {}). Close it and try again.",
+                    settings.port,
+                    l.pid
+                ),
+            }
+        }
+        if killed > 0 {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while net::port_open(settings.port) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+        self.set_status(ServerStatus {
+            state: ServerState::Stopped,
+            url: local_url(settings.port),
+            message: None,
+            pid: None,
+            external: false,
+        });
+        self.start(paths, settings)
     }
 
     fn watch_startup(
@@ -307,10 +397,53 @@ impl ServerManager {
     }
 }
 
+/// Parses SillyTavern's "New connection from 192.168.1.50; User Agent: ..." and
+/// "Blocked connection from ..." lines. Returns None for this PC's own browser.
+pub fn parse_connection_line(line: &str) -> Option<ConnectionEvent> {
+    let (blocked, rest) = if let Some(r) = line.split_once("New connection from ") {
+        (false, r.1)
+    } else if let Some(r) = line.split_once("Blocked connection from ") {
+        (true, r.1)
+    } else {
+        return None;
+    };
+    let (ip_part, ua) = rest.split_once("; User Agent:").unwrap_or((rest, ""));
+    let ip = ip_part
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c| c == '[' || c == ']')
+        .to_string();
+    if ip.is_empty() || ip == "127.0.0.1" || ip == "::1" || ip.starts_with("::ffff:127.") {
+        return None;
+    }
+    let ua = ua.trim().to_string();
+    let lower = ua.to_ascii_lowercase();
+    let device = if lower.contains("iphone") {
+        "iPhone"
+    } else if lower.contains("ipad") {
+        "iPad"
+    } else if lower.contains("android") {
+        "Android phone"
+    } else if lower.contains("mobile") {
+        "a phone"
+    } else {
+        "another device"
+    };
+    Some(ConnectionEvent {
+        ip,
+        user_agent: ua,
+        blocked,
+        at: chrono::Local::now().format("%H:%M").to_string(),
+        device: device.to_string(),
+    })
+}
+
 fn spawn_tail_logger<R: Read + Send + 'static>(
     reader: R,
     label: &'static str,
     tail: Arc<Mutex<VecDeque<String>>>,
+    manager: Arc<ServerManager>,
 ) {
     std::thread::spawn(move || {
         for line in BufReader::new(reader).lines() {
@@ -319,6 +452,9 @@ fn spawn_tail_logger<R: Read + Send + 'static>(
                 continue;
             }
             log::info!(target: "sillytavern", "[{label}] {line}");
+            if let Some(event) = parse_connection_line(&line) {
+                manager.record_connection(event);
+            }
             let mut tail = tail.lock().unwrap();
             if tail.len() >= TAIL_LINES {
                 tail.pop_front();
@@ -326,4 +462,31 @@ fn spawn_tail_logger<R: Read + Send + 'static>(
             tail.push_back(line);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_connection_line;
+
+    #[test]
+    fn parses_phone_connections_and_ignores_localhost() {
+        let ev = parse_connection_line(
+            "New connection from 192.168.1.50; User Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X)",
+        )
+        .unwrap();
+        assert_eq!(ev.ip, "192.168.1.50");
+        assert_eq!(ev.device, "iPhone");
+        assert!(!ev.blocked);
+
+        let blocked = parse_connection_line(
+            "Blocked connection from 192.168.1.77 (forwarded from 10.0.0.2); User Agent: Mozilla/5.0 (Linux; Android 16)",
+        )
+        .unwrap();
+        assert_eq!(blocked.ip, "192.168.1.77");
+        assert_eq!(blocked.device, "Android phone");
+        assert!(blocked.blocked);
+
+        assert!(parse_connection_line("New connection from 127.0.0.1; User Agent: curl/8.19.0").is_none());
+        assert!(parse_connection_line("SillyTavern is listening on IPv4: 0.0.0.0:8000").is_none());
+    }
 }

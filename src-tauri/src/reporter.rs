@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Mirrors the UI's step states; `Pending`/`Error` exist for protocol completeness.
 #[allow(dead_code)]
@@ -15,7 +15,7 @@ pub enum StepStatus {
     Error,
 }
 
-/// Progress events for a long task (install or update). The UI mirrors these 1:1.
+/// Progress events for a long task (install, update, self-update). The UI mirrors these 1:1.
 #[derive(Serialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TaskEvent {
@@ -37,6 +37,96 @@ pub enum TaskEvent {
         ok: bool,
         error: Option<String>,
     },
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StepSnapshot {
+    pub step: String,
+    pub status: StepStatus,
+    pub detail: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressSnapshot {
+    pub step: String,
+    pub done: u64,
+    pub total: Option<u64>,
+    pub unit: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishedSnapshot {
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+/// The current/last task as the Rust side saw it, so a window reopened mid-install can
+/// rebuild the step list instead of showing a blank one.
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSnapshot {
+    pub task: Option<String>,
+    pub steps: Vec<StepSnapshot>,
+    pub progress: Option<ProgressSnapshot>,
+    pub finished: Option<FinishedSnapshot>,
+}
+
+impl TaskSnapshot {
+    pub fn apply(&mut self, event: &TaskEvent) {
+        match event {
+            TaskEvent::Step {
+                task,
+                step,
+                status,
+                detail,
+            } => {
+                if self.task.as_deref() != Some(task) || self.finished.is_some() {
+                    self.task = Some(task.clone());
+                    self.steps.clear();
+                    self.progress = None;
+                    self.finished = None;
+                }
+                match self.steps.iter_mut().find(|s| s.step == *step) {
+                    Some(s) => {
+                        s.status = *status;
+                        s.detail = detail.clone();
+                    }
+                    None => self.steps.push(StepSnapshot {
+                        step: step.clone(),
+                        status: *status,
+                        detail: detail.clone(),
+                    }),
+                }
+                if *status != StepStatus::Running {
+                    self.progress = None;
+                }
+            }
+            TaskEvent::Progress {
+                step,
+                done,
+                total,
+                unit,
+                ..
+            } => {
+                self.progress = Some(ProgressSnapshot {
+                    step: step.clone(),
+                    done: *done,
+                    total: *total,
+                    unit: unit.clone(),
+                });
+            }
+            TaskEvent::Finished { ok, error, .. } => {
+                self.progress = None;
+                self.finished = Some(FinishedSnapshot {
+                    ok: *ok,
+                    error: error.clone(),
+                });
+            }
+        }
+    }
 }
 
 /// Sink for task progress. Object-safe so the installer can take `&dyn Reporter`.
@@ -73,7 +163,7 @@ pub trait Reporter: Send + Sync {
     }
 }
 
-/// Forwards events to the webview as `task-event`.
+/// Forwards events to the webview as `task-event` and keeps the snapshot in AppState.
 pub struct TauriReporter {
     pub app: AppHandle,
     pub task: String,
@@ -85,6 +175,9 @@ impl Reporter for TauriReporter {
     }
 
     fn emit(&self, event: TaskEvent) {
+        if let Some(state) = self.app.try_state::<crate::gui::AppState>() {
+            state.task.lock().unwrap().apply(&event);
+        }
         if let Err(e) = self.app.emit("task-event", &event) {
             log::warn!("could not emit task event: {e}");
         }

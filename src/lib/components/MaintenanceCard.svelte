@@ -5,6 +5,10 @@
   let { status }: { status: StatusInfo } = $props();
 
   let picking = $state(false);
+  let startWithWindows = $state(false);
+  $effect(() => {
+    startWithWindows = status.startWithWindows;
+  });
 
   let locationNote = $derived.by(() => {
     if (status.mode === "adopted") {
@@ -32,14 +36,33 @@
     }
   }
 
+  function checked(ev: Event): boolean {
+    return (ev.currentTarget as HTMLInputElement).checked;
+  }
+
   function setOpenBrowser(ev: Event) {
-    const enabled = (ev.currentTarget as HTMLInputElement).checked;
-    api.setOpenBrowser(enabled).catch((e) => app.showToast(errorText(e)));
+    api.setOpenBrowser(checked(ev)).catch((e) => app.showToast(errorText(e)));
   }
 
   function setCheckUpdates(ev: Event) {
-    const enabled = (ev.currentTarget as HTMLInputElement).checked;
-    api.setCheckUpdatesOnStart(enabled).catch((e) => app.showToast(errorText(e)));
+    api.setCheckUpdatesOnStart(checked(ev)).catch((e) => app.showToast(errorText(e)));
+  }
+
+  function setKeepAwake(ev: Event) {
+    api.setKeepAwake(checked(ev)).catch((e) => app.showToast(errorText(e)));
+  }
+
+  async function setStartWithWindows(ev: Event) {
+    const input = ev.currentTarget as HTMLInputElement;
+    const enabled = input.checked;
+    try {
+      await api.setStartWithWindows(enabled);
+      startWithWindows = enabled;
+      app.showToast(enabled ? "SillyTavern will start with Windows (in the tray)" : "No longer starts with Windows");
+    } catch (e) {
+      app.showToast(errorText(e));
+      input.checked = !enabled;
+    }
   }
 
   async function useDifferentFolder() {
@@ -75,7 +98,11 @@
     <button class="btn" disabled={app.checkingUpdates} onclick={() => app.checkUpdates()}>
       {app.checkingUpdates ? "Checking..." : "Check for updates"}
     </button>
+    <button class="btn" onclick={() => app.repairInstall()} title="Re-runs setup; fixes a half-finished or broken install without losing anything">
+      Repair installation
+    </button>
     <button class="btn" onclick={() => api.openInstallFolder()}>Open SillyTavern folder</button>
+    <button class="btn" onclick={() => api.openConfigFile().catch((e) => app.showToast(errorText(e)))}>Edit config.yaml</button>
     <button class="btn" onclick={() => toastResult(api.createShortcuts)}>Re-create shortcuts</button>
     <button class="btn" disabled={picking} onclick={useDifferentFolder}>Use a different SillyTavern folder...</button>
   </div>
@@ -113,6 +140,14 @@
   <label class="switch">
     <input type="checkbox" checked={status.settings.openBrowserOnStart} onchange={setOpenBrowser} />
     <span>Open the browser automatically when SillyTavern starts</span>
+  </label>
+  <label class="switch">
+    <input type="checkbox" checked={status.settings.keepAwake} onchange={setKeepAwake} />
+    <span>Keep this PC awake while SillyTavern is running <em class="muted">(the screen can still turn off)</em></span>
+  </label>
+  <label class="switch">
+    <input type="checkbox" checked={startWithWindows} onchange={setStartWithWindows} />
+    <span>Start SillyTavern when I sign in to Windows <em class="muted">(in the tray, no window)</em></span>
   </label>
   <label class="switch">
     <input type="checkbox" checked={status.settings.checkUpdatesOnStart} onchange={setCheckUpdates} />
@@ -153,5 +188,10 @@
   .switch + .switch {
     margin-top: 10px;
     padding-top: 10px;
+  }
+
+  .switch em {
+    font-style: normal;
+    font-size: 12.5px;
   }
 </style>

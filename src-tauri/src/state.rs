@@ -16,6 +16,8 @@ pub struct Settings {
     pub open_browser_on_start: bool,
     /// Look for SillyTavern and launcher updates a few seconds after each start.
     pub check_updates_on_start: bool,
+    /// Stop Windows from sleeping while SillyTavern runs (phones need the PC awake).
+    pub keep_awake: bool,
 }
 
 impl Default for Settings {
@@ -25,6 +27,7 @@ impl Default for Settings {
             port: 8000,
             open_browser_on_start: true,
             check_updates_on_start: true,
+            keep_awake: true,
         }
     }
 }
@@ -83,9 +86,11 @@ impl LauncherState {
     }
 }
 
-/// True when every piece needed to run SillyTavern is present on disk.
+/// True when every piece needed to run SillyTavern is present on disk. npm writes
+/// `node_modules/.package-lock.json` last, so a half-finished install does not count.
 pub fn is_installed(paths: &Paths) -> bool {
+    let st_dir = paths.st_dir();
     paths.node_exe().is_file()
-        && paths.st_dir().join("server.js").is_file()
-        && paths.st_dir().join("node_modules").is_dir()
+        && st_dir.join("server.js").is_file()
+        && st_dir.join("node_modules").join(".package-lock.json").is_file()
 }

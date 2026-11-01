@@ -1,8 +1,8 @@
 //! Tauri app shell: window, tray icon, single-instance handling, server auto-start,
-//! update check on launch.
+//! update check on launch, keep-awake, connection feedback.
 
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 use crate::paths::Paths;
 use crate::process::JobObject;
+use crate::reporter::TaskSnapshot;
 use crate::server::ServerManager;
 use crate::state::{self, LauncherState};
 use crate::{commands, logging, selfupdate};
@@ -20,6 +21,8 @@ pub struct AppState {
     pub job: Option<Arc<JobObject>>,
     /// An install, update or self-update is in progress.
     pub busy: AtomicBool,
+    /// Steps of the current/last task, for windows reopened mid-task.
+    pub task: Mutex<TaskSnapshot>,
 }
 
 impl AppState {
@@ -34,17 +37,19 @@ impl AppState {
 }
 
 pub fn run() {
+    let minimized = std::env::args().any(|a| a == "--minimized");
     let base = Paths::detect().expect("could not determine the install folder");
     let _ = base.ensure_dirs();
     logging::init(&base.launcher_log(), cfg!(debug_assertions));
     let state = LauncherState::load(&base);
     let paths = state.paths(&base);
     log::info!(
-        "SillyTavern Launcher {} starting (home: {}, sillytavern: {}, mode: {:?})",
+        "SillyTavern Launcher {} starting (home: {}, sillytavern: {}, mode: {:?}{})",
         selfupdate::CURRENT_VERSION,
         paths.home.display(),
         paths.st_dir().display(),
-        state.mode
+        state.mode,
+        if minimized { ", minimized" } else { "" }
     );
     selfupdate::cleanup_old(&paths);
     let job = match JobObject::new() {
@@ -60,6 +65,7 @@ pub fn run() {
         server,
         job,
         busy: AtomicBool::new(false),
+        task: Mutex::new(TaskSnapshot::default()),
     };
 
     tauri::Builder::default()
@@ -74,17 +80,27 @@ pub fn run() {
             }
         }))
         .manage(app_state)
-        .setup(|app| {
+        .setup(move |app| {
             logging::attach_app(app.handle().clone());
             build_tray(app.handle())?;
-            let handle = app.handle().clone();
             let st = app.state::<AppState>();
+
+            let handle = app.handle().clone();
             st.server.set_notifier(Box::new(move |status| {
                 let _ = handle.emit("server-event", &status);
+                commands::apply_keep_awake(&handle);
             }));
+            let handle = app.handle().clone();
+            st.server.set_connection_notifier(Box::new(move |event| {
+                let _ = handle.emit("connection-event", &event);
+            }));
+
+            if !minimized {
+                show_main_window(app.handle());
+            }
             let paths = st.paths();
             if state::is_installed(&paths) {
-                commands::start_server_bg(app.handle().clone(), true);
+                commands::start_server_bg(app.handle().clone(), !minimized);
                 if LauncherState::load(&paths).settings.check_updates_on_start {
                     commands::updates_on_launch(app.handle().clone());
                 }
@@ -103,16 +119,25 @@ pub fn run() {
             commands::discover_installs,
             commands::pick_install_folder,
             commands::start_install,
+            commands::repair_install,
             commands::start_server,
             commands::stop_server,
+            commands::take_over_server,
             commands::open_browser,
             commands::set_lan_enabled,
+            commands::allow_ip,
+            commands::diagnose_phone,
+            commands::fix_firewall,
+            commands::fix_whitelist,
             commands::set_open_browser,
             commands::set_check_updates_on_start,
+            commands::set_keep_awake,
+            commands::set_start_with_windows,
             commands::check_updates,
             commands::start_update,
             commands::start_self_update,
             commands::open_install_folder,
+            commands::open_config_file,
             commands::get_logs,
             commands::create_shortcuts,
             commands::add_firewall_rule,

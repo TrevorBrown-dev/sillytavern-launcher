@@ -23,6 +23,9 @@ Every run after that (the launcher):
 - Shows a QR code and the `http://192.168.x.x:8000` address for the phone, with "same Wi-Fi" and "add to home screen" instructions.
 - Lives in the tray. Closing the window keeps SillyTavern running; Quit stops it. The Node process is attached to a Windows Job Object, so if the launcher dies for any reason Node dies with it and port 8000 is never left hostage.
 - Checks for updates a few seconds after each start (toggleable) and shows a banner. SillyTavern updates follow the install: a git clone gets `git fetch` + commits-behind on its own branch and `git pull --ff-only` + `npm install` (staging users stay on staging); anything else gets the newest release installed next to the old one, then a folder swap that carries `data/`, `config.yaml`, `plugins/` (and `.git`) across, with `src/server-init.js` run afterwards so new config keys get added.
+- Makes phone access debuggable without a terminal. The phone card picks the Wi-Fi/Ethernet address over VPN and virtual adapters (and labels the alternatives), reads SillyTavern's own log to say "Your iPhone connected at 15:42" or "a device at 192.168.1.50 was blocked [Allow it]", warns when the running copy was started outside the launcher (with a "Restart under the launcher" that closes the stray `node.exe` on the port), and has a "Check what's wrong" button: is the server bound to all interfaces, is the firewall allow rule there, is there a *block* rule for node.exe (the "clicked Cancel on the Windows popup" case), does a VPN own the default route, does `config.yaml` allow the home ranges, will the phone see a login (basic auth / user accounts). Every failing check carries a one-click fix; the firewall fix removes block rules and re-adds ours in a single UAC prompt. The rule itself now covers all private ranges (`10/8`, `172.16/12`, `192.168/16`) rather than just the local subnet.
+- Keeps the PC awake while SillyTavern runs (toggle, on by default; the display may still sleep) and can start with Windows minimized to the tray (toggle, off by default; a Startup-folder shortcut with `--minimized`).
+- Treats a half-finished install as not installed (npm writes `node_modules/.package-lock.json` last), keeps the install step list on the Rust side so a reopened window shows real progress, and offers "Repair installation" (re-runs the idempotent setup) wherever things look broken.
 - Updates itself: the newest `SillyTavern-Launcher.exe` is downloaded from this repo's latest release, verified against the SHA-256 digest GitHub publishes for release assets, the running exe is renamed aside (Windows allows renaming a running exe, not overwriting it), the new one is moved into place and started with `--wait-for-pid <old pid>` so the single-instance guard does not bounce it, and the old one exits. The parked `.old.exe` is deleted on the next start.
 
 Everything lives under `%LOCALAPPDATA%\SillyTavern\`:
@@ -72,6 +75,7 @@ $env:STLAUNCHER_HOME = "D:\scratch\st-home"
 .\release\SillyTavern Launcher.exe --cli install --no-shortcut --no-firewall
 .\release\SillyTavern Launcher.exe --cli install --adopt D:\SillyTavern --no-shortcut --no-firewall   # run an existing install in place
 .\release\SillyTavern Launcher.exe --cli discover     # list SillyTavern folders found on this PC
+.\release\SillyTavern Launcher.exe --cli diagnose     # the phone-access checks, as text (good for "paste me the output")
 .\release\SillyTavern Launcher.exe --cli status
 .\release\SillyTavern Launcher.exe --cli start        # foreground, Ctrl+C to stop
 .\release\SillyTavern Launcher.exe --cli check-update # SillyTavern (git or release) and the launcher itself
@@ -103,15 +107,17 @@ src-tauri/src/
   discover.rs     finds existing SillyTavern folders to adopt
   git.rs          branch / behind-count / ff-pull for adopted clones
   selfupdate.rs   launcher self-update (download, digest check, rename swap)
+  diagnose.rs     phone-access checks with fix ids
+  awake.rs        SetThreadExecutionState keep-awake worker
   node.rs         nodejs.org index lookup, download, checksum, unpack
   sillytavern.rs  GitHub latest-release lookup, archive download
   npm.rs          npm ci via the bundled node
   config.rs       line-based config.yaml patcher (keeps user edits + comments)
-  server.rs       spawn node server.js, readiness watcher, stop
+  server.rs       spawn node server.js, readiness watcher, connection feedback, take-over, stop
   process.rs      CREATE_NO_WINDOW helper + Job Object
   shortcut.rs     .lnk creation through IShellLink
-  firewall.rs     netsh rule via one UAC prompt (ShellExecuteEx "runas")
-  net.rs          LAN IP discovery, port probe, QR SVG
+  firewall.rs     netsh rule via one UAC prompt (ShellExecuteEx "runas"), block-rule detection and repair
+  net.rs          adapter-aware LAN addresses, port probes, netstat/tasklist helpers, QR SVG
   download.rs     streaming download with progress + retries, sha256
   archive.rs      zip extraction that strips the top-level folder
   reporter.rs     step/progress events (Tauri + CLI implementations)
@@ -124,7 +130,7 @@ tools/            make_icons.py, build.ps1
 
 `docs/` is the download page served by GitHub Pages (Settings -> Pages -> `main` / `docs`). Its button links to `https://github.com/TrevorBrown-dev/sillytavern-launcher/releases/latest/download/SillyTavern-Launcher.exe`, a GitHub URL that always redirects to the newest release's asset of that name, so the page never needs updating when a release goes out; the script on the page only decorates the button with the version, size and date from the releases API. Keep the asset name `SillyTavern-Launcher.exe` stable across releases for that to hold.
 
-The Rust <-> UI contract is small: commands in `commands.rs` (invoked through `api.ts`) and four events, `task-event` (install/update/self-update steps and progress), `server-event` (server state changes), `updates-available` (the on-launch check) and `log-line`. If you add a field to a serde struct, add it to the matching interface in `api.ts`.
+The Rust <-> UI contract is small: commands in `commands.rs` (invoked through `api.ts`) and five events, `task-event` (install/update/self-update steps and progress), `server-event` (server state changes), `connection-event` (a phone connected or was blocked, parsed from SillyTavern's log), `updates-available` (the on-launch check) and `log-line`. If you add a field to a serde struct, add it to the matching interface in `api.ts`.
 
 Releasing a new launcher version: bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`, run `tools\build.ps1`, then `gh release create vX.Y.Z "release\SillyTavern-Launcher.exe" --title "SillyTavern Launcher X.Y.Z" --notes-file ...`. The asset must keep the name `SillyTavern-Launcher.exe`: the download page and the self-updater both rely on it.
 

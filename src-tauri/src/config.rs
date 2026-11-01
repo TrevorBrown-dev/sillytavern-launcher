@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 
 /// Private IPv4 ranges plus loopback. SillyTavern matches these with `ip-matching`
 /// (CIDR supported) after normalising IPv4-mapped IPv6 addresses.
@@ -29,18 +30,46 @@ pub enum PatchMode {
     Adopted,
 }
 
+/// The handful of config.yaml values the launcher reasons about.
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigFlags {
+    pub exists: bool,
+    pub listen: Option<bool>,
+    pub whitelist_mode: Option<bool>,
+    pub basic_auth: Option<bool>,
+    pub user_accounts: Option<bool>,
+    pub port: Option<u16>,
+    pub whitelist: Vec<String>,
+}
+
+impl ConfigFlags {
+    /// All the private ranges the launcher writes are present.
+    pub fn whitelist_covers_lan(&self) -> bool {
+        LAN_WHITELIST
+            .iter()
+            .filter(|e| e.contains('/'))
+            .all(|e| self.whitelist.iter().any(|w| w == e))
+    }
+}
+
 /// Creates config.yaml from `default/config.yaml` on first run, then patches the
 /// keys the launcher owns for a managed install.
 pub fn apply(st_dir: &Path, lan_enabled: bool) -> Result<()> {
-    apply_with(st_dir, PatchMode::Managed { lan_enabled })
+    apply_with(st_dir, PatchMode::Managed { lan_enabled }, &[])
 }
 
 /// Adopted install: minimal, reversible touch (see `PatchMode::Adopted`).
 pub fn apply_adopted(st_dir: &Path) -> Result<()> {
-    apply_with(st_dir, PatchMode::Adopted)
+    apply_with(st_dir, PatchMode::Adopted, &[])
 }
 
-fn apply_with(st_dir: &Path, mode: PatchMode) -> Result<()> {
+/// Adds specific addresses (e.g. a phone that was blocked) to the whitelist.
+pub fn add_whitelist_entries(st_dir: &Path, entries: &[String]) -> Result<()> {
+    apply_with(st_dir, PatchMode::Adopted, entries)
+}
+
+fn apply_with(st_dir: &Path, mode: PatchMode, extra: &[String]) -> Result<()> {
     let cfg = st_dir.join("config.yaml");
     let (source, mode) = if cfg.is_file() {
         (cfg.clone(), mode)
@@ -54,21 +83,26 @@ fn apply_with(st_dir: &Path, mode: PatchMode) -> Result<()> {
     };
     let text = fs::read_to_string(&source)
         .with_context(|| format!("could not read {}", source.display()))?;
-    let patched = patch_with(&text, mode);
+    let patched = patch_full(&text, mode, extra);
     if cfg.is_file() && patched == text {
         return Ok(());
     }
     fs::write(&cfg, patched).with_context(|| format!("could not write {}", cfg.display()))?;
-    log::info!("wrote {} ({mode:?})", cfg.display());
+    log::info!("wrote {} ({mode:?}, +{} entries)", cfg.display(), extra.len());
     Ok(())
 }
 
 #[cfg(test)]
 pub fn patch(text: &str, lan_enabled: bool) -> String {
-    patch_with(text, PatchMode::Managed { lan_enabled })
+    patch_full(text, PatchMode::Managed { lan_enabled }, &[])
 }
 
+#[cfg(test)]
 pub fn patch_with(text: &str, mode: PatchMode) -> String {
+    patch_full(text, mode, &[])
+}
+
+pub fn patch_full(text: &str, mode: PatchMode, extra: &[String]) -> String {
     let basic_auth = text
         .lines()
         .any(|l| is_top_scalar(l, "basicAuthMode") && scalar_value(l) == "true");
@@ -112,29 +146,9 @@ pub fn patch_with(text: &str, mode: PatchMode) -> String {
         }
         if top_level_key(line) == Some("whitelist") {
             saw_whitelist = true;
-            let mut existing: Vec<String> = Vec::new();
-            let after_colon = line.split_once(':').map(|(_, v)| v.trim()).unwrap_or("");
-            if after_colon.starts_with('[') {
-                existing.extend(
-                    after_colon
-                        .trim_matches(|c| c == '[' || c == ']')
-                        .split(',')
-                        .map(unquote)
-                        .filter(|s| !s.is_empty()),
-                );
-            } else {
-                while let Some(next) = lines.peek() {
-                    let trimmed = next.trim_start();
-                    if next.starts_with(' ') && trimmed.starts_with("- ") {
-                        existing.push(unquote(&trimmed[2..]));
-                        lines.next();
-                    } else {
-                        break;
-                    }
-                }
-            }
+            let existing = take_list_block(line, &mut lines);
             out.push("whitelist:".to_string());
-            for entry in merged_whitelist(existing) {
+            for entry in merged_whitelist(existing, extra) {
                 out.push(format!("  - {entry}"));
             }
             continue;
@@ -149,7 +163,7 @@ pub fn patch_with(text: &str, mode: PatchMode) -> String {
     }
     if !saw_whitelist {
         out.push("whitelist:".to_string());
-        for entry in merged_whitelist(Vec::new()) {
+        for entry in merged_whitelist(Vec::new(), extra) {
             out.push(format!("  - {entry}"));
         }
     }
@@ -158,19 +172,82 @@ pub fn patch_with(text: &str, mode: PatchMode) -> String {
     result
 }
 
-/// The `port:` value from an install's config.yaml, if it has one.
-pub fn read_port(st_dir: &Path) -> Option<u16> {
-    let text = fs::read_to_string(st_dir.join("config.yaml")).ok()?;
-    text.lines()
-        .find(|l| is_top_scalar(l, "port"))
-        .and_then(|l| scalar_value(l).parse().ok())
+/// Consumes a YAML list that follows `key:` (either flow `[a, b]` on the same line or
+/// indented `- item` lines) and returns its items.
+fn take_list_block<'a>(
+    line: &str,
+    lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
+) -> Vec<String> {
+    let mut items: Vec<String> = Vec::new();
+    let after_colon = line.split_once(':').map(|(_, v)| v.trim()).unwrap_or("");
+    if after_colon.starts_with('[') {
+        items.extend(
+            after_colon
+                .trim_matches(|c| c == '[' || c == ']')
+                .split(',')
+                .map(unquote)
+                .filter(|s| !s.is_empty()),
+        );
+    } else {
+        while let Some(next) = lines.peek() {
+            let trimmed = next.trim_start();
+            if next.starts_with(' ') && trimmed.starts_with("- ") {
+                items.push(unquote(&trimmed[2..]));
+                lines.next();
+            } else {
+                break;
+            }
+        }
+    }
+    items
 }
 
-fn merged_whitelist(existing: Vec<String>) -> Vec<String> {
+/// Reads the values the launcher cares about without modifying anything.
+pub fn read_flags(st_dir: &Path) -> ConfigFlags {
+    let Ok(text) = fs::read_to_string(st_dir.join("config.yaml")) else {
+        return ConfigFlags::default();
+    };
+    let mut flags = ConfigFlags {
+        exists: true,
+        ..Default::default()
+    };
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        if is_top_scalar(line, "listen") {
+            flags.listen = parse_bool(scalar_value(line));
+        } else if is_top_scalar(line, "whitelistMode") {
+            flags.whitelist_mode = parse_bool(scalar_value(line));
+        } else if is_top_scalar(line, "basicAuthMode") {
+            flags.basic_auth = parse_bool(scalar_value(line));
+        } else if is_top_scalar(line, "enableUserAccounts") {
+            flags.user_accounts = parse_bool(scalar_value(line));
+        } else if is_top_scalar(line, "port") {
+            flags.port = scalar_value(line).parse().ok();
+        } else if top_level_key(line) == Some("whitelist") {
+            flags.whitelist = take_list_block(line, &mut lines);
+        }
+    }
+    flags
+}
+
+/// The `port:` value from an install's config.yaml, if it has one.
+pub fn read_port(st_dir: &Path) -> Option<u16> {
+    read_flags(st_dir).port
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn merged_whitelist(existing: Vec<String>, extra: &[String]) -> Vec<String> {
     let mut merged = existing;
-    for entry in LAN_WHITELIST {
-        if !merged.iter().any(|m| m == entry) {
-            merged.push((*entry).to_string());
+    for entry in LAN_WHITELIST.iter().map(|e| (*e).to_string()).chain(extra.iter().cloned()) {
+        if !entry.is_empty() && !merged.iter().any(|m| *m == entry) {
+            merged.push(entry);
         }
     }
     merged
@@ -240,6 +317,7 @@ whitelist:
   - 127.0.0.1
 whitelistDockerHosts: true
 basicAuthMode: false
+enableUserAccounts: false
 sso:
   trustedProxies:
     - ::1
@@ -294,8 +372,32 @@ sso:
     }
 
     #[test]
+    fn extra_entries_are_added_once() {
+        let out = patch_full(DEFAULT, PatchMode::Adopted, &["192.168.1.50".to_string()]);
+        assert!(out.contains("  - 192.168.1.50\n"));
+        let again = patch_full(&out, PatchMode::Adopted, &["192.168.1.50".to_string()]);
+        assert_eq!(again.matches("192.168.1.50").count(), 1);
+    }
+
+    #[test]
     fn reads_scalar_values_without_comments() {
         assert_eq!(scalar_value("port: 8123 # custom"), "8123");
         assert_eq!(scalar_value("basicAuthMode: true"), "true");
+    }
+
+    #[test]
+    fn flags_parse_from_text() {
+        let dir = std::env::temp_dir().join(format!("stlauncher-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.yaml"), patch(DEFAULT, true)).unwrap();
+        let flags = read_flags(&dir);
+        assert!(flags.exists);
+        assert_eq!(flags.listen, Some(true));
+        assert_eq!(flags.whitelist_mode, Some(true));
+        assert_eq!(flags.basic_auth, Some(false));
+        assert_eq!(flags.user_accounts, Some(false));
+        assert_eq!(flags.port, Some(8000));
+        assert!(flags.whitelist_covers_lan());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
