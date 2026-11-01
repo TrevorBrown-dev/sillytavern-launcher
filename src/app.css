@@ -1,0 +1,196 @@
+/* Global tokens, reset and shared primitives (buttons, cards, type).
+   Component-specific rules live in each .svelte file. */
+
+:root {
+  --bg: #15121c;
+  --panel: #1e1929;
+  --panel-2: #272036;
+  --border: #352d49;
+  --text: #efeaf7;
+  --muted: #a79dbd;
+  --accent: #f0a04b;
+  --accent-hover: #ffb765;
+  --accent-text: #2a1a08;
+  --ok: #6fd08c;
+  --warn: #f5c451;
+  --err: #ff7272;
+  --radius: 14px;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --mono: Consolas, "Cascadia Mono", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+body {
+  background:
+    radial-gradient(900px 500px at 10% -10%, rgba(120, 80, 170, 0.28), transparent 60%),
+    radial-gradient(700px 400px at 100% 110%, rgba(240, 160, 75, 0.12), transparent 60%),
+    var(--bg);
+}
+
+#app {
+  height: 100%;
+}
+
+h2 {
+  margin: 12px 0 6px;
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.2px;
+}
+
+h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 13px;
+}
+
+.tiny {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 10px 0 0;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.95em;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  box-shadow: var(--shadow);
+}
+
+.card + .card {
+  margin-top: 16px;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  padding: 9px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    transform 0.06s ease,
+    border-color 0.12s ease;
+}
+
+.btn:hover {
+  background: #32294a;
+  border-color: #4a3f66;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  transform: none;
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-text);
+}
+
+.btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn.big {
+  font-size: 17px;
+  padding: 14px 28px;
+  border-radius: 12px;
+}
+
+.btn.small {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.btn.ghost {
+  background: transparent;
+}
+
+.link {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.switch input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3a3150;
+  border-radius: 10px;
+  border: 2px solid var(--bg);
+}

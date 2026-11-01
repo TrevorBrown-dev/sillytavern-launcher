@@ -1,17 +1,31 @@
-# Builds the release exe and copies it to dist\SillyTavern Launcher.exe
-# Note: cargo prints progress on stderr, so don't use $ErrorActionPreference = 'Stop'
-# around it in Windows PowerShell 5.1 (that turns the first stderr line into a fatal error).
+# Builds the frontend (Vite) and the release exe (cargo), then copies the exe to
+# release\SillyTavern Launcher.exe.
+# Note: cargo and npm print progress on stderr, so don't use $ErrorActionPreference = 'Stop'
+# around them in Windows PowerShell 5.1 (that turns the first stderr line into a fatal error).
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSScriptRoot
 
-Push-Location "$root\src-tauri"
+Push-Location $root
 try {
-    cargo build --release
-    if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
+    if (-not (Test-Path "$root\node_modules")) {
+        npm ci --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
+    }
+    npm run build
+    if ($LASTEXITCODE -ne 0) { throw "vite build failed with exit code $LASTEXITCODE" }
+
+    Push-Location "$root\src-tauri"
+    try {
+        # custom-protocol = production mode (embedded dist/ rather than the Vite dev URL).
+        cargo build --release --features custom-protocol
+        if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
 } finally {
     Pop-Location
 }
 
-New-Item -ItemType Directory -Force "$root\dist" | Out-Null
-Copy-Item "$root\src-tauri\target\release\stlauncher.exe" "$root\dist\SillyTavern Launcher.exe" -Force
-Get-Item "$root\dist\SillyTavern Launcher.exe" | Select-Object FullName, Length, LastWriteTime
+New-Item -ItemType Directory -Force "$root\release" | Out-Null
+Copy-Item "$root\src-tauri\target\release\stlauncher.exe" "$root\release\SillyTavern Launcher.exe" -Force
+Get-Item "$root\release\SillyTavern Launcher.exe" | Select-Object FullName, Length, LastWriteTime

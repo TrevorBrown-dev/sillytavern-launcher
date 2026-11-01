@@ -9,6 +9,12 @@ rust-version = "1.85"
 name = "stlauncher_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Production mode: serve the embedded `dist/` instead of the Vite dev server.
+# `tauri build` turns this on by itself; a bare `cargo build --release` must pass
+# `--features custom-protocol` (tools/build.ps1 does).
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

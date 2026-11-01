@@ -37,19 +37,24 @@ Everything lives under `%LOCALAPPDATA%\SillyTavern\`:
 Prerequisites on the build machine (all already present on this PC):
 
 - Rust with the MSVC toolchain (`rust-toolchain.toml` pins `stable-x86_64-pc-windows-msvc`) and Visual Studio Build Tools with the Windows SDK.
+- Node.js 20+ for the frontend toolchain (Vite + Svelte 5 + TypeScript). This is only a build-time dependency; the launcher downloads its own portable Node for SillyTavern.
 - WebView2 runtime (ships with Windows 11; the launcher needs it at runtime too).
 - Python + Pillow, only if you change the icon (`python tools/make_icons.py`).
 
-No Node tooling is needed for the launcher itself: the UI is plain HTML/CSS/JS in `ui/` and Tauri embeds it at compile time.
-
 ```powershell
 # from the repo root
-.\tools\build.ps1          # cargo build --release, then copies the exe to dist\
-# or by hand
-cd src-tauri
-cargo build --release      # -> target\release\stlauncher.exe
-cargo test                 # config.yaml patcher tests
+npm install                # once
+.\tools\build.ps1          # vite build + cargo build --release, copies the exe to release\
+
+# development with hot reload (Vite dev server + debug Tauri window)
+npm run tauri dev
+
+# checks
+npm run check              # svelte-check (TypeScript + Svelte)
+cd src-tauri; cargo test   # config.yaml patcher tests
 ```
+
+Tauri picks dev or production mode by the `custom-protocol` cargo feature, not by the cargo profile. Without it the app loads the Vite dev URL from `tauri.conf.json` (that is what `npm run tauri dev` relies on); with it the app serves the embedded `dist/`. `build.ps1` passes `--features custom-protocol` and runs `npm run build` first for exactly that reason. A bare `cargo build --release` produces an exe that tries to reach `localhost:1420` and shows "can't reach this page".
 
 The release exe is the whole product. No MSI or NSIS bundle is produced (`bundle.active` is false in `tauri.conf.json`).
 
@@ -59,11 +64,11 @@ The release exe is the whole product. No MSI or NSIS bundle is produced (`bundle
 
 ```powershell
 $env:STLAUNCHER_HOME = "D:\scratch\st-home"
-.\target\release\stlauncher.exe --cli install --no-shortcut --no-firewall
-.\target\release\stlauncher.exe --cli status
-.\target\release\stlauncher.exe --cli start        # foreground, Ctrl+C to stop
-.\target\release\stlauncher.exe --cli check-update
-.\target\release\stlauncher.exe --cli update
+.\release\SillyTavern Launcher.exe --cli install --no-shortcut --no-firewall
+.\release\SillyTavern Launcher.exe --cli status
+.\release\SillyTavern Launcher.exe --cli start        # foreground, Ctrl+C to stop
+.\release\SillyTavern Launcher.exe --cli check-update
+.\release\SillyTavern Launcher.exe --cli update
 ```
 
 Launching the exe with the same variable set opens the GUI against that folder. Debug builds keep a console window; release builds are GUI-subsystem and reattach to the parent console for `--cli`.
@@ -71,6 +76,17 @@ Launching the exe with the same variable set opens the GUI against that folder. 
 ## Layout
 
 ```
+index.html, vite.config.ts, svelte.config.js, tsconfig.json, package.json
+src/                      Svelte 5 frontend (runes, TypeScript)
+  main.ts                 mounts App
+  app.css                 tokens + shared primitives (buttons, cards, type)
+  App.svelte              screen switch: welcome / task / home
+  lib/api.ts              typed invoke/listen wrappers; interfaces mirror the Rust structs
+  lib/store.svelte.ts     the one reactive store (status, task steps, logs, toast)
+  lib/format.ts           humanBytes
+  lib/components/         TopBar, Welcome, TaskProgress, Home, StatusCard,
+                          MaintenanceCard, PhoneCard, LogPanel, Toast
+public/icon.png
 src-tauri/src/
   lib.rs          entry: --cli dispatch or GUI
   gui.rs          Tauri builder, tray icon, single-instance, auto-start
@@ -92,9 +108,10 @@ src-tauri/src/
   state.rs        launcher-state.json
   paths.rs        all paths derived from the install root
   cli.rs          --cli subcommands
-ui/               index.html, styles.css, app.js (no build step)
 tools/            make_icons.py, build.ps1
 ```
+
+The Rust <-> UI contract is small: commands in `commands.rs` (invoked through `api.ts`) and three events, `task-event` (install/update steps and progress), `server-event` (server state changes) and `log-line`. If you add a field to a serde struct, add it to the matching interface in `api.ts`.
 
 ## Decisions worth knowing
 
