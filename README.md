@@ -1,5 +1,7 @@
 # SillyTavern Launcher
 
+**Just want to install SillyTavern?** Go to **https://trevorbrown-dev.github.io/sillytavern-launcher/** and click the big button. The rest of this page is for people building the launcher.
+
 A single Windows `.exe` that installs SillyTavern end to end for someone who has never opened a terminal, then stays around as the thing they double-click to run it. Built for friends coming over from JanitorAI who mostly want to use it from their phone.
 
 ## What it does
@@ -110,6 +112,8 @@ src-tauri/src/
   cli.rs          --cli subcommands
 tools/            make_icons.py, build.ps1
 ```
+
+`docs/` is the download page served by GitHub Pages (Settings -> Pages -> `main` / `docs`). Its button links to `https://github.com/TrevorBrown-dev/sillytavern-launcher/releases/latest/download/SillyTavern-Launcher.exe`, a GitHub URL that always redirects to the newest release's asset of that name, so the page never needs updating when a release goes out; the script on the page only decorates the button with the version, size and date from the releases API. Keep the asset name `SillyTavern-Launcher.exe` stable across releases for that to hold.
 
 The Rust <-> UI contract is small: commands in `commands.rs` (invoked through `api.ts`) and three events, `task-event` (install/update steps and progress), `server-event` (server state changes) and `log-line`. If you add a field to a serde struct, add it to the matching interface in `api.ts`.
 

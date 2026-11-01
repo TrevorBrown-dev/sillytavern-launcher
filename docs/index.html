@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SillyTavern Launcher</title>
+  <meta name="description" content="One-click SillyTavern installer for Windows. Download, run, done. Use it from your phone too." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="SillyTavern Launcher" />
+  <meta property="og:description" content="One-click SillyTavern installer for Windows. Download, run, done. Use it from your phone too." />
+  <meta property="og:image" content="https://trevorbrown-dev.github.io/sillytavern-launcher/icon.png" />
+  <meta property="og:url" content="https://trevorbrown-dev.github.io/sillytavern-launcher/" />
+  <meta name="theme-color" content="#15121c" />
+  <link rel="icon" href="icon.png" />
+  <style>
+    :root {
+      --bg: #15121c;
+      --panel: #1e1929;
+      --border: #352d49;
+      --text: #efeaf7;
+      --muted: #a79dbd;
+      --accent: #f0a04b;
+      --accent-hover: #ffb765;
+      --accent-text: #2a1a08;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      color-scheme: dark;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+      font-size: 17px;
+      line-height: 1.5;
+      background:
+        radial-gradient(900px 500px at 15% -10%, rgba(120, 80, 170, 0.3), transparent 60%),
+        radial-gradient(700px 400px at 100% 110%, rgba(240, 160, 75, 0.14), transparent 60%),
+        var(--bg);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    main {
+      max-width: 660px;
+      margin: 0 auto;
+      padding: 56px 20px 48px;
+      text-align: center;
+    }
+
+    .logo {
+      width: 96px;
+      height: 96px;
+      border-radius: 22px;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+    }
+
+    h1 {
+      margin: 22px 0 10px;
+      font-size: 40px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      line-height: 1.1;
+    }
+
+    .lede {
+      margin: 0 auto 32px;
+      max-width: 520px;
+      color: var(--muted);
+      font-size: 19px;
+    }
+
+    .download {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      width: 100%;
+      padding: 22px 28px;
+      border-radius: 18px;
+      background: var(--accent);
+      color: var(--accent-text);
+      text-decoration: none;
+      box-shadow: 0 12px 34px rgba(240, 160, 75, 0.35);
+      transition: transform 0.08s ease, background 0.12s ease, box-shadow 0.12s ease;
+    }
+
+    .download:hover {
+      background: var(--accent-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 18px 40px rgba(240, 160, 75, 0.45);
+    }
+
+    .download:active {
+      transform: translateY(0);
+    }
+
+    .download svg {
+      width: 40px;
+      height: 40px;
+      flex-shrink: 0;
+    }
+
+    .download .text {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      text-align: left;
+    }
+
+    .download strong {
+      font-size: 26px;
+      font-weight: 700;
+      line-height: 1.15;
+    }
+
+    .download small {
+      font-size: 14px;
+      font-weight: 600;
+      opacity: 0.8;
+    }
+
+    .fine {
+      margin: 14px 0 0;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .fine a,
+    footer a,
+    .faq a {
+      color: var(--accent);
+    }
+
+    .notice {
+      display: none;
+      margin: 22px auto 0;
+      max-width: 520px;
+      padding: 12px 16px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .notice.show {
+      display: block;
+    }
+
+    section {
+      margin-top: 48px;
+      text-align: left;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 22px;
+      font-weight: 650;
+    }
+
+    ol.steps {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: step;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    ol.steps li {
+      counter-increment: step;
+      position: relative;
+      padding: 16px 18px 16px 62px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+    }
+
+    ol.steps li::before {
+      content: counter(step);
+      position: absolute;
+      left: 18px;
+      top: 15px;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: var(--accent-text);
+      font-weight: 700;
+      display: grid;
+      place-items: center;
+    }
+
+    ol.steps strong {
+      display: block;
+      margin-bottom: 2px;
+    }
+
+    ol.steps li,
+    .faq details {
+      color: var(--muted);
+    }
+
+    ol.steps strong,
+    .faq summary {
+      color: var(--text);
+    }
+
+    .faq details {
+      border-top: 1px solid var(--border);
+      padding: 12px 0;
+    }
+
+    .faq details:last-child {
+      border-bottom: 1px solid var(--border);
+    }
+
+    .faq summary {
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .faq p {
+      margin: 8px 0 0;
+    }
+
+    code {
+      font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
+      font-size: 0.92em;
+      background: rgba(255, 255, 255, 0.07);
+      padding: 1px 6px;
+      border-radius: 6px;
+    }
+
+    footer {
+      margin-top: 48px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 520px) {
+      main {
+        padding-top: 40px;
+      }
+
+      h1 {
+        font-size: 32px;
+      }
+
+      .download strong {
+        font-size: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img class="logo" src="icon.png" alt="" width="96" height="96" />
+    <h1>SillyTavern Launcher</h1>
+    <p class="lede">Installs SillyTavern on your Windows PC in one click and lets you use it from your phone. No terminal, no admin account.</p>
+
+    <a class="download" id="download" href="https://github.com/TrevorBrown-dev/sillytavern-launcher/releases/latest/download/SillyTavern-Launcher.exe">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3v12" />
+        <path d="m7 10 5 5 5-5" />
+        <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+      </svg>
+      <span class="text">
+        <strong>Download for Windows</strong>
+        <small id="meta">Latest version</small>
+      </span>
+    </a>
+    <p class="fine">64-bit Windows 10 or 11 &middot; free &middot; <a href="https://github.com/TrevorBrown-dev/sillytavern-launcher/releases">all versions</a></p>
+    <p class="notice" id="notice">Looks like you're not on a Windows PC. Open this page on the PC you want SillyTavern on, then use your phone with it afterwards.</p>
+
+    <section>
+      <h2>Then</h2>
+      <ol class="steps">
+        <li>
+          <strong>Open the downloaded file.</strong>
+          Windows will say "Windows protected your PC" because the file isn't signed. Click <em>More info</em>, then <em>Run anyway</em>.
+        </li>
+        <li>
+          <strong>Click Install.</strong>
+          Leave both boxes ticked. It downloads what it needs (a few minutes). Windows asks once to allow it through the firewall; click <em>Yes</em>.
+        </li>
+        <li>
+          <strong>That's it.</strong>
+          SillyTavern opens in your browser. Next time, use the SillyTavern shortcut on your desktop. For your phone, scan the QR code the launcher shows while on the same Wi-Fi.
+        </li>
+      </ol>
+    </section>
+
+    <section class="faq">
+      <h2>Questions</h2>
+      <details>
+        <summary>Is the "Windows protected your PC" warning a problem?</summary>
+        <p>No. It appears for any program that isn't signed with a paid certificate. The source code is public on GitHub if you want to check it.</p>
+      </details>
+      <details>
+        <summary>Where does it install, and how do I remove it?</summary>
+        <p>Everything goes into <code>%LOCALAPPDATA%\SillyTavern</code> and nothing else on the PC is touched. To uninstall, quit the launcher from the tray icon, delete that folder and the desktop shortcut.</p>
+      </details>
+      <details>
+        <summary>Where are my chats and characters?</summary>
+        <p>In <code>%LOCALAPPDATA%\SillyTavern\SillyTavern\data</code>. Updates from the launcher keep that folder.</p>
+      </details>
+      <details>
+        <summary>My phone can't open it</summary>
+        <p>The PC has to be on, the launcher running, and both devices on the same Wi-Fi (not mobile data, not a guest network). The launcher's "It doesn't load on my phone" section has the rest.</p>
+      </details>
+      <details>
+        <summary>The launcher window is blank</summary>
+        <p>On Windows 10, install the <a href="https://developer.microsoft.com/microsoft-edge/webview2/">WebView2 runtime</a> from Microsoft and open the launcher again. Windows 11 already includes it.</p>
+      </details>
+    </section>
+
+    <footer>
+      Open source on <a href="https://github.com/TrevorBrown-dev/sillytavern-launcher">GitHub</a>.
+      SillyTavern itself is made by the <a href="https://github.com/SillyTavern/SillyTavern">SillyTavern team</a>; this is just an installer for it.
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      // The href above already points at the newest release; this only decorates the button.
+      fetch("https://api.github.com/repos/TrevorBrown-dev/sillytavern-launcher/releases/latest")
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.statusText))))
+        .then((rel) => {
+          const asset = (rel.assets || []).find((a) => a.name.toLowerCase().endsWith(".exe"));
+          const parts = [rel.tag_name];
+          if (asset) parts.push(`${Math.round(asset.size / 1048576)} MB`);
+          if (rel.published_at) {
+            parts.push(new Date(rel.published_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }));
+          }
+          document.getElementById("meta").textContent = parts.join(" · ");
+          if (asset) document.getElementById("download").href = asset.browser_download_url;
+        })
+        .catch(() => {});
+
+      if (!/Windows/i.test(navigator.userAgent)) {
+        document.getElementById("notice").classList.add("show");
+      }
+    })();
+  </script>
+</body>
+</html>
