@@ -78,6 +78,19 @@ impl Drop for JobObject {
     }
 }
 
+/// Blocks until the process with `pid` has exited (or `timeout` passes). Used by a freshly
+/// self-updated launcher so the single-instance guard does not bounce it off the old one.
+pub fn wait_for_pid(pid: u32, timeout: std::time::Duration) {
+    use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
+            return; // already gone
+        };
+        WaitForSingleObject(handle, timeout.as_millis() as u32);
+        let _ = CloseHandle(handle);
+    }
+}
+
 /// Assigns `child` to the job when one exists; logs instead of failing otherwise.
 pub fn attach_to_job(job: Option<&JobObject>, child: &Child, what: &str) {
     if let Some(job) = job {

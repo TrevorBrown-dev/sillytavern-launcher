@@ -1,7 +1,8 @@
-//! Tauri app shell: window, tray icon, single-instance handling, server auto-start.
+//! Tauri app shell: window, tray icon, single-instance handling, server auto-start,
+//! update check on launch.
 
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -11,25 +12,41 @@ use crate::paths::Paths;
 use crate::process::JobObject;
 use crate::server::ServerManager;
 use crate::state::{self, LauncherState};
-use crate::{commands, logging};
+use crate::{commands, logging, selfupdate};
 
 pub struct AppState {
-    pub paths: Paths,
+    paths: RwLock<Paths>,
     pub server: Arc<ServerManager>,
     pub job: Option<Arc<JobObject>>,
-    /// An install or update is in progress.
+    /// An install, update or self-update is in progress.
     pub busy: AtomicBool,
 }
 
+impl AppState {
+    pub fn paths(&self) -> Paths {
+        self.paths.read().unwrap().clone()
+    }
+
+    /// Called after setup changes the SillyTavern folder (adopt / un-adopt).
+    pub fn set_paths(&self, paths: Paths) {
+        *self.paths.write().unwrap() = paths;
+    }
+}
+
 pub fn run() {
-    let paths = Paths::detect().expect("could not determine the install folder");
-    let _ = paths.ensure_dirs();
-    logging::init(&paths.launcher_log(), cfg!(debug_assertions));
+    let base = Paths::detect().expect("could not determine the install folder");
+    let _ = base.ensure_dirs();
+    logging::init(&base.launcher_log(), cfg!(debug_assertions));
+    let state = LauncherState::load(&base);
+    let paths = state.paths(&base);
     log::info!(
-        "SillyTavern Launcher {} starting (home: {})",
-        env!("CARGO_PKG_VERSION"),
-        paths.home.display()
+        "SillyTavern Launcher {} starting (home: {}, sillytavern: {}, mode: {:?})",
+        selfupdate::CURRENT_VERSION,
+        paths.home.display(),
+        paths.st_dir().display(),
+        state.mode
     );
+    selfupdate::cleanup_old(&paths);
     let job = match JobObject::new() {
         Ok(j) => Some(Arc::new(j)),
         Err(e) => {
@@ -37,10 +54,9 @@ pub fn run() {
             None
         }
     };
-    let settings = LauncherState::load(&paths).settings;
-    let server = Arc::new(ServerManager::new(job.clone(), settings.port));
+    let server = Arc::new(ServerManager::new(job.clone(), state.settings.port));
     let app_state = AppState {
-        paths,
+        paths: RwLock::new(paths),
         server,
         job,
         busy: AtomicBool::new(false),
@@ -53,7 +69,7 @@ pub fn run() {
             let st = app.state::<AppState>();
             if st.server.is_up() {
                 commands::open_browser_now(app);
-            } else if state::is_installed(&st.paths) {
+            } else if state::is_installed(&st.paths()) {
                 commands::start_server_bg(app.clone(), true);
             }
         }))
@@ -66,8 +82,12 @@ pub fn run() {
             st.server.set_notifier(Box::new(move |status| {
                 let _ = handle.emit("server-event", &status);
             }));
-            if state::is_installed(&st.paths) {
+            let paths = st.paths();
+            if state::is_installed(&paths) {
                 commands::start_server_bg(app.handle().clone(), true);
+                if LauncherState::load(&paths).settings.check_updates_on_start {
+                    commands::updates_on_launch(app.handle().clone());
+                }
             }
             Ok(())
         })
@@ -80,14 +100,18 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
+            commands::discover_installs,
+            commands::pick_install_folder,
             commands::start_install,
             commands::start_server,
             commands::stop_server,
             commands::open_browser,
             commands::set_lan_enabled,
             commands::set_open_browser,
-            commands::check_update,
+            commands::set_check_updates_on_start,
+            commands::check_updates,
             commands::start_update,
+            commands::start_self_update,
             commands::open_install_folder,
             commands::get_logs,
             commands::create_shortcuts,

@@ -15,12 +15,15 @@ First run (the installer):
 5. Copies itself into the install folder and creates Desktop + Start Menu shortcuts pointing at that copy (so deleting the original download does not break anything).
 6. Adds an inbound Windows Firewall rule for the bundled `node.exe`, limited to `LocalSubnet`. This is the one step that needs admin, so it triggers a single UAC prompt. If the user declines, Windows will show its own "allow Node.js" prompt the first time the server starts, and the UI says so.
 
+**Already have SillyTavern?** The welcome screen scans the usual places (home, Desktop, Documents, Downloads, drive roots, the official launcher's `SillyTavern-Launcher\SillyTavern`) and offers to run an existing install in place ("adopted" mode), or you can browse to its folder. Nothing is copied or moved: the launcher runs `server.js` where it is with its own portable Node, runs the same `npm install --no-save` that `Start.bat` runs, adds only the phone whitelist to `config.yaml` (their `listen`, port and browser settings are left alone; ours are passed as command-line flags), and reads their port. `Start.bat`, their shortcuts and their git checkout keep working. If their old instance is already running, the launcher shows it as running instead of starting a second one.
+
 Every run after that (the launcher):
 
 - Starts `node server.js` with no console window, waits for the port to answer, opens the browser.
 - Shows a QR code and the `http://192.168.x.x:8000` address for the phone, with "same Wi-Fi" and "add to home screen" instructions.
 - Lives in the tray. Closing the window keeps SillyTavern running; Quit stops it. The Node process is attached to a Windows Job Object, so if the launcher dies for any reason Node dies with it and port 8000 is never left hostage.
-- Can update SillyTavern in place: the new release is downloaded and installed next to the old one, then folders are swapped and `data/`, `config.yaml` and `plugins/` are carried across. `src/server-init.js` is run afterwards so new config keys get added.
+- Checks for updates a few seconds after each start (toggleable) and shows a banner. SillyTavern updates follow the install: a git clone gets `git fetch` + commits-behind on its own branch and `git pull --ff-only` + `npm install` (staging users stay on staging); anything else gets the newest release installed next to the old one, then a folder swap that carries `data/`, `config.yaml`, `plugins/` (and `.git`) across, with `src/server-init.js` run afterwards so new config keys get added.
+- Updates itself: the newest `SillyTavern-Launcher.exe` is downloaded from this repo's latest release, verified against the SHA-256 digest GitHub publishes for release assets, the running exe is renamed aside (Windows allows renaming a running exe, not overwriting it), the new one is moved into place and started with `--wait-for-pid <old pid>` so the single-instance guard does not bounce it, and the old one exits. The parked `.old.exe` is deleted on the next start.
 
 Everything lives under `%LOCALAPPDATA%\SillyTavern\`:
 
@@ -67,10 +70,13 @@ The release exe is the whole product. No MSI or NSIS bundle is produced (`bundle
 ```powershell
 $env:STLAUNCHER_HOME = "D:\scratch\st-home"
 .\release\SillyTavern Launcher.exe --cli install --no-shortcut --no-firewall
+.\release\SillyTavern Launcher.exe --cli install --adopt D:\SillyTavern --no-shortcut --no-firewall   # run an existing install in place
+.\release\SillyTavern Launcher.exe --cli discover     # list SillyTavern folders found on this PC
 .\release\SillyTavern Launcher.exe --cli status
 .\release\SillyTavern Launcher.exe --cli start        # foreground, Ctrl+C to stop
-.\release\SillyTavern Launcher.exe --cli check-update
+.\release\SillyTavern Launcher.exe --cli check-update # SillyTavern (git or release) and the launcher itself
 .\release\SillyTavern Launcher.exe --cli update
+.\release\SillyTavern Launcher.exe --cli self-update [--force]
 ```
 
 Launching the exe with the same variable set opens the GUI against that folder. Debug builds keep a console window; release builds are GUI-subsystem and reattach to the parent console for `--cli`.
@@ -86,14 +92,17 @@ src/                      Svelte 5 frontend (runes, TypeScript)
   lib/api.ts              typed invoke/listen wrappers; interfaces mirror the Rust structs
   lib/store.svelte.ts     the one reactive store (status, task steps, logs, toast)
   lib/format.ts           humanBytes
-  lib/components/         TopBar, Welcome, TaskProgress, Home, StatusCard,
+  lib/components/         TopBar, Welcome, TaskProgress, Home, UpdateBanner, StatusCard,
                           MaintenanceCard, PhoneCard, LogPanel, Toast
 public/icon.png
 src-tauri/src/
   lib.rs          entry: --cli dispatch or GUI
   gui.rs          Tauri builder, tray icon, single-instance, auto-start
   commands.rs     #[tauri::command]s + background server start helper
-  installer.rs    install + update orchestration (idempotent steps)
+  installer.rs    install (managed or adopted) + update orchestration (idempotent steps)
+  discover.rs     finds existing SillyTavern folders to adopt
+  git.rs          branch / behind-count / ff-pull for adopted clones
+  selfupdate.rs   launcher self-update (download, digest check, rename swap)
   node.rs         nodejs.org index lookup, download, checksum, unpack
   sillytavern.rs  GitHub latest-release lookup, archive download
   npm.rs          npm ci via the bundled node
@@ -115,7 +124,9 @@ tools/            make_icons.py, build.ps1
 
 `docs/` is the download page served by GitHub Pages (Settings -> Pages -> `main` / `docs`). Its button links to `https://github.com/TrevorBrown-dev/sillytavern-launcher/releases/latest/download/SillyTavern-Launcher.exe`, a GitHub URL that always redirects to the newest release's asset of that name, so the page never needs updating when a release goes out; the script on the page only decorates the button with the version, size and date from the releases API. Keep the asset name `SillyTavern-Launcher.exe` stable across releases for that to hold.
 
-The Rust <-> UI contract is small: commands in `commands.rs` (invoked through `api.ts`) and three events, `task-event` (install/update steps and progress), `server-event` (server state changes) and `log-line`. If you add a field to a serde struct, add it to the matching interface in `api.ts`.
+The Rust <-> UI contract is small: commands in `commands.rs` (invoked through `api.ts`) and four events, `task-event` (install/update/self-update steps and progress), `server-event` (server state changes), `updates-available` (the on-launch check) and `log-line`. If you add a field to a serde struct, add it to the matching interface in `api.ts`.
+
+Releasing a new launcher version: bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`, run `tools\build.ps1`, then `gh release create vX.Y.Z "release\SillyTavern-Launcher.exe" --title "SillyTavern Launcher X.Y.Z" --notes-file ...`. The asset must keep the name `SillyTavern-Launcher.exe`: the download page and the self-updater both rely on it.
 
 ## Decisions worth knowing
 
@@ -124,6 +135,7 @@ The Rust <-> UI contract is small: commands in `commands.rs` (invoked through `a
 - **CLI flags plus config.yaml.** The server is started with `--listen=<bool> --browserLaunchEnabled=false --port N`, so the launcher's settings always win even if the user edits `config.yaml`, while the whitelist (which has no CLI flag) lives in the file.
 - **Node 24 pinned by major.** `node::PREFERRED_MAJOR` picks the newest patch of that line; bump it when SillyTavern's `engines.node` moves. Falls back to the newest LTS if that line disappears from the index.
 - **Updates never delete first.** The new version is fully installed into `SillyTavern.new` before anything is renamed, and `SillyTavern.old` is only removed after the swap succeeded.
+- **Adopt, don't import.** Long-time users often have gigabytes of chats and characters; copying them is slow and leaves two diverging installs. Running their folder in place keeps one source of truth, and the launcher's footprint there is limited to things `Start.bat` already does plus whitelist entries. Updates respect their branch instead of forcing the release zip onto a git checkout.
 
 ## Known limitations
 

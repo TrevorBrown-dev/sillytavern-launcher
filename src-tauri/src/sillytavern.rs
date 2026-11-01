@@ -50,10 +50,6 @@ pub fn version_in(dir: &Path) -> Option<String> {
     serde_json::from_str::<Pkg>(&text).ok().map(|p| p.version)
 }
 
-pub fn installed_version(paths: &Paths) -> Option<String> {
-    version_in(&paths.st_dir())
-}
-
 /// Downloads the release archive for `tag` and unpacks it into `dest`.
 pub fn download_and_extract(
     client: &Client,

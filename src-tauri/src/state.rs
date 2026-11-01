@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +14,8 @@ pub struct Settings {
     pub port: u16,
     /// Open the browser once SillyTavern reports ready.
     pub open_browser_on_start: bool,
+    /// Look for SillyTavern and launcher updates a few seconds after each start.
+    pub check_updates_on_start: bool,
 }
 
 impl Default for Settings {
@@ -20,14 +24,27 @@ impl Default for Settings {
             lan_enabled: true,
             port: 8000,
             open_browser_on_start: true,
+            check_updates_on_start: true,
         }
     }
+}
+
+/// Whether SillyTavern lives in the launcher's own folder or somewhere the user already had it.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum InstallMode {
+    #[default]
+    Managed,
+    Adopted,
 }
 
 /// Persisted record of what the launcher installed, stored as `launcher-state.json`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LauncherState {
+    pub mode: InstallMode,
+    /// Only set for adopted installs: the folder that holds server.js.
+    pub st_dir: Option<PathBuf>,
     pub st_version: Option<String>,
     pub st_tag: Option<String>,
     pub node_version: Option<String>,
@@ -54,6 +71,15 @@ impl LauncherState {
         std::fs::create_dir_all(&paths.home)?;
         std::fs::write(paths.state_file(), text)
             .with_context(|| format!("could not write {}", paths.state_file().display()))
+    }
+
+    /// Paths with this state's adopted folder applied (if any).
+    pub fn paths(&self, base: &Paths) -> Paths {
+        base.with_st_dir(if self.mode == InstallMode::Adopted {
+            self.st_dir.clone()
+        } else {
+            None
+        })
     }
 }
 

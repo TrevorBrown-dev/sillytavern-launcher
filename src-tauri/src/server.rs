@@ -128,7 +128,10 @@ impl ServerManager {
                 self.set_status(ServerStatus {
                     state: ServerState::Running,
                     url,
-                    message: Some("SillyTavern was already running".to_string()),
+                    message: Some(
+                        "SillyTavern was already running (started outside the launcher, e.g. with Start.bat). Close that one if you want the launcher to manage it."
+                            .to_string(),
+                    ),
                     pid: None,
                     external: true,
                 });

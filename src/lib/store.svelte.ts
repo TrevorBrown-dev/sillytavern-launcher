@@ -11,6 +11,7 @@ import {
   type StepStatus,
   type TaskEvent,
   type TaskKind,
+  type UpdateReport,
 } from "./api";
 
 export interface StepView {
@@ -28,7 +29,7 @@ export interface ProgressView {
 
 export type Screen = "loading" | "welcome" | "task" | "home";
 
-/** Step ids and labels, in the order the Rust installer reports them. */
+/** Step ids and labels, in the order the Rust side reports them. */
 export const STEP_SETS: Record<TaskKind, [id: string, label: string][]> = {
   install: [
     ["node", "Node.js runtime"],
@@ -43,6 +44,12 @@ export const STEP_SETS: Record<TaskKind, [id: string, label: string][]> = {
     ["deps", "Packages"],
     ["config", "Switch over"],
   ],
+  selfupdate: [
+    ["download", "Download the new launcher"],
+    ["verify", "Verify"],
+    ["swap", "Install"],
+    ["restart", "Restart"],
+  ],
 };
 
 const LOG_CAP = 600;
@@ -56,10 +63,14 @@ class AppStore {
   taskError = $state<string | null>(null);
   logLines = $state<string[]>([]);
   toast = $state<string | null>(null);
+  updates = $state<UpdateReport | null>(null);
+  updatesDismissed = $state(false);
+  checkingUpdates = $state(false);
   lastInstallOptions = $state<InstallOptions>({
     lanEnabled: true,
     createShortcut: true,
     addFirewallRule: true,
+    adoptPath: null,
   });
 
   screen: Screen = $derived.by(() => {
@@ -82,6 +93,13 @@ class AppStore {
       api.uiLog(`server-event: ${server.state}`);
     });
     await events.onLog((line) => this.appendLog(line));
+    await events.onUpdates((report) => {
+      this.updates = report;
+      this.updatesDismissed = false;
+      api.uiLog(
+        `updates-available: st=${report.sillytavern?.available ?? "?"} launcher=${report.launcher?.available ?? "?"}`,
+      );
+    });
     api.uiLog("listeners registered");
     await this.refreshStatus();
     // Keeps the phone address fresh (Wi-Fi changes) and the status honest.
@@ -115,7 +133,7 @@ class AppStore {
     }, ms);
   }
 
-  // ---------- install / update ----------
+  // ---------- install / update / self-update ----------
 
   beginTask(kind: TaskKind) {
     this.task = kind;
@@ -143,14 +161,36 @@ class AppStore {
     }
   }
 
+  async startSelfUpdate() {
+    this.beginTask("selfupdate");
+    try {
+      await api.startSelfUpdate();
+    } catch (e) {
+      this.failTask(errorText(e));
+    }
+  }
+
   retryTask() {
     if (this.task === "update") void this.startUpdate();
+    else if (this.task === "selfupdate") void this.startSelfUpdate();
     else void this.startInstall(this.lastInstallOptions);
   }
 
   leaveTask() {
     this.task = null;
     void this.refreshStatus();
+  }
+
+  async checkUpdates() {
+    this.checkingUpdates = true;
+    try {
+      this.updates = await api.checkUpdates();
+      this.updatesDismissed = false;
+    } catch (e) {
+      this.showToast(`Could not check for updates: ${errorText(e)}`);
+    } finally {
+      this.checkingUpdates = false;
+    }
   }
 
   handleTaskEvent(e: TaskEvent) {
@@ -164,12 +204,18 @@ class AppStore {
     } else if (e.kind === "progress") {
       this.progress = { done: e.done, total: e.total, unit: e.unit };
     } else if (e.ok) {
+      if (this.task === "selfupdate") {
+        // The new launcher is starting; this window is about to close.
+        this.showToast("New launcher starting...", 10_000);
+        return;
+      }
       this.showToast(
         this.task === "install"
-          ? "SillyTavern is installed. Starting it now..."
+          ? "SillyTavern is ready. Starting it now..."
           : "Update complete. Starting SillyTavern...",
       );
       this.task = null;
+      this.updates = null;
       void this.refreshStatus();
     } else {
       this.failTask(e.error ?? "Unknown error");

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "../store.svelte";
+  import UpdateBanner from "./UpdateBanner.svelte";
   import StatusCard from "./StatusCard.svelte";
   import MaintenanceCard from "./MaintenanceCard.svelte";
   import PhoneCard from "./PhoneCard.svelte";
@@ -8,6 +9,7 @@
 
 {#if app.status}
   <section>
+    <UpdateBanner />
     <div class="grid">
       <div class="column">
         <StatusCard server={app.status.server} />

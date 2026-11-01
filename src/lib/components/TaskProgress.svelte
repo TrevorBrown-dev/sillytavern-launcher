@@ -6,6 +6,33 @@
   const GLYPH: Record<string, string> = { pending: "", running: "", done: "✓", skipped: "–", error: "!" };
 
   let isInstall = $derived(app.task === "install");
+  let adopting = $derived(isInstall && !!app.lastInstallOptions.adoptPath);
+  let title = $derived.by(() => {
+    switch (app.task) {
+      case "install":
+        return adopting ? "Setting up your SillyTavern" : "Installing SillyTavern";
+      case "update":
+        return "Updating SillyTavern";
+      case "selfupdate":
+        return "Updating the launcher";
+      default:
+        return "";
+    }
+  });
+  let subtitle = $derived.by(() => {
+    switch (app.task) {
+      case "install":
+        return adopting
+          ? "Nothing is copied or moved. The launcher checks the packages, adds the phone whitelist and sets up shortcuts."
+          : "Grab a drink. Downloading and unpacking takes a few minutes, mostly on the Packages step.";
+      case "update":
+        return "Your chats, characters and settings are kept. This takes a few minutes.";
+      case "selfupdate":
+        return "The launcher restarts itself when this finishes. SillyTavern is stopped briefly.";
+      default:
+        return "";
+    }
+  });
   let percent = $derived(
     app.progress?.total ? Math.min(100, (app.progress.done / app.progress.total) * 100) : null,
   );
@@ -22,14 +49,8 @@
 </script>
 
 <section>
-  <h2>{isInstall ? "Installing SillyTavern" : "Updating SillyTavern"}</h2>
-  <p class="muted">
-    {#if isInstall}
-      Grab a drink. Downloading and unpacking takes a few minutes, mostly on the Packages step.
-    {:else}
-      Your chats, characters and settings are kept. This takes a few minutes.
-    {/if}
-  </p>
+  <h2>{title}</h2>
+  <p class="muted">{subtitle}</p>
 
   <div class="card">
     <ol class="steps">
@@ -63,7 +84,7 @@
       <pre>{app.taskError}</pre>
       <div class="actions">
         <button class="btn primary" onclick={() => app.retryTask()}>Try again</button>
-        {#if !isInstall}
+        {#if !isInstall || app.status?.installed}
           <button class="btn" onclick={() => app.leaveTask()}>Back</button>
         {/if}
       </div>

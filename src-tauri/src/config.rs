@@ -17,28 +17,70 @@ pub const LAN_WHITELIST: &[&str] = &[
     "192.168.0.0/16",
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatchMode {
+    /// Launcher-owned install: `listen`, `whitelistMode`, the whitelist and
+    /// `browserLaunch.enabled` are all ours to set.
+    Managed { lan_enabled: bool },
+    /// Someone else's install: only merge the whitelist, and turn whitelist mode on
+    /// unless basic auth already protects the server. `listen` and the browser launch
+    /// are driven by command-line flags for our launches, so their file keeps working
+    /// exactly as before with Start.bat.
+    Adopted,
+}
+
 /// Creates config.yaml from `default/config.yaml` on first run, then patches the
-/// keys the launcher owns: `listen`, `whitelistMode`, the `whitelist` list and
-/// `browserLaunch.enabled` (the launcher opens the browser itself).
+/// keys the launcher owns for a managed install.
 pub fn apply(st_dir: &Path, lan_enabled: bool) -> Result<()> {
+    apply_with(st_dir, PatchMode::Managed { lan_enabled })
+}
+
+/// Adopted install: minimal, reversible touch (see `PatchMode::Adopted`).
+pub fn apply_adopted(st_dir: &Path) -> Result<()> {
+    apply_with(st_dir, PatchMode::Adopted)
+}
+
+fn apply_with(st_dir: &Path, mode: PatchMode) -> Result<()> {
     let cfg = st_dir.join("config.yaml");
-    let source = if cfg.is_file() {
-        cfg.clone()
+    let (source, mode) = if cfg.is_file() {
+        (cfg.clone(), mode)
     } else {
-        st_dir.join("default").join("config.yaml")
+        // No config yet (never started): seed it like a managed install would.
+        let seeded = match mode {
+            PatchMode::Adopted => PatchMode::Managed { lan_enabled: true },
+            m => m,
+        };
+        (st_dir.join("default").join("config.yaml"), seeded)
     };
     let text = fs::read_to_string(&source)
         .with_context(|| format!("could not read {}", source.display()))?;
-    let patched = patch(&text, lan_enabled);
+    let patched = patch_with(&text, mode);
     if cfg.is_file() && patched == text {
         return Ok(());
     }
     fs::write(&cfg, patched).with_context(|| format!("could not write {}", cfg.display()))?;
-    log::info!("wrote {} (lan_enabled={lan_enabled})", cfg.display());
+    log::info!("wrote {} ({mode:?})", cfg.display());
     Ok(())
 }
 
+#[cfg(test)]
 pub fn patch(text: &str, lan_enabled: bool) -> String {
+    patch_with(text, PatchMode::Managed { lan_enabled })
+}
+
+pub fn patch_with(text: &str, mode: PatchMode) -> String {
+    let basic_auth = text
+        .lines()
+        .any(|l| is_top_scalar(l, "basicAuthMode") && scalar_value(l) == "true");
+    let force_whitelist_mode = match mode {
+        PatchMode::Managed { .. } => true,
+        PatchMode::Adopted => !basic_auth,
+    };
+    let managed_lan = match mode {
+        PatchMode::Managed { lan_enabled } => Some(lan_enabled),
+        PatchMode::Adopted => None,
+    };
+
     let mut out: Vec<String> = Vec::with_capacity(text.lines().count() + 8);
     let mut top_key: Option<String> = None;
     let mut saw_listen = false;
@@ -52,14 +94,19 @@ pub fn patch(text: &str, lan_enabled: bool) -> String {
 
         if is_top_scalar(line, "listen") {
             saw_listen = true;
-            out.push(format!("listen: {lan_enabled}"));
-            continue;
+            if let Some(lan_enabled) = managed_lan {
+                out.push(format!("listen: {lan_enabled}"));
+                continue;
+            }
         }
-        if is_top_scalar(line, "whitelistMode") {
+        if is_top_scalar(line, "whitelistMode") && force_whitelist_mode {
             out.push("whitelistMode: true".to_string());
             continue;
         }
-        if top_key.as_deref() == Some("browserLaunch") && is_nested_scalar(line, "enabled") {
+        if managed_lan.is_some()
+            && top_key.as_deref() == Some("browserLaunch")
+            && is_nested_scalar(line, "enabled")
+        {
             out.push(format!("{}enabled: false", leading_ws(line)));
             continue;
         }
@@ -96,7 +143,9 @@ pub fn patch(text: &str, lan_enabled: bool) -> String {
     }
 
     if !saw_listen {
-        out.push(format!("listen: {lan_enabled}"));
+        if let Some(lan_enabled) = managed_lan {
+            out.push(format!("listen: {lan_enabled}"));
+        }
     }
     if !saw_whitelist {
         out.push("whitelist:".to_string());
@@ -107,6 +156,14 @@ pub fn patch(text: &str, lan_enabled: bool) -> String {
     let mut result = out.join("\n");
     result.push('\n');
     result
+}
+
+/// The `port:` value from an install's config.yaml, if it has one.
+pub fn read_port(st_dir: &Path) -> Option<u16> {
+    let text = fs::read_to_string(st_dir.join("config.yaml")).ok()?;
+    text.lines()
+        .find(|l| is_top_scalar(l, "port"))
+        .and_then(|l| scalar_value(l).parse().ok())
 }
 
 fn merged_whitelist(existing: Vec<String>) -> Vec<String> {
@@ -123,6 +180,11 @@ fn unquote(s: &str) -> String {
     let s = s.trim();
     let s = s.split('#').next().unwrap_or("").trim();
     s.trim_matches(|c| c == '"' || c == '\'').to_string()
+}
+
+fn scalar_value(line: &str) -> &str {
+    let value = line.split_once(':').map(|(_, v)| v).unwrap_or("");
+    value.split('#').next().unwrap_or("").trim()
 }
 
 fn top_level_key(line: &str) -> Option<&str> {
@@ -209,5 +271,31 @@ sso:
     fn can_turn_listen_off() {
         let out = patch(&patch(DEFAULT, true), false);
         assert!(out.contains("\nlisten: false\n"));
+    }
+
+    #[test]
+    fn adopted_only_merges_the_whitelist() {
+        let out = patch_with(DEFAULT, PatchMode::Adopted);
+        assert!(out.contains("\nlisten: false\n"), "listen must be left alone");
+        assert!(out.contains("  enabled: true\n  browser: 'default'\n"), "browserLaunch must be left alone");
+        assert!(out.contains("whitelistMode: true\n"));
+        assert!(out.contains("  - 192.168.0.0/16\n"));
+        assert_eq!(patch_with(&out, PatchMode::Adopted), out);
+    }
+
+    #[test]
+    fn adopted_respects_basic_auth() {
+        let text = DEFAULT
+            .replace("whitelistMode: true", "whitelistMode: false")
+            .replace("basicAuthMode: false", "basicAuthMode: true");
+        let out = patch_with(&text, PatchMode::Adopted);
+        assert!(out.contains("whitelistMode: false\n"), "basic auth already protects the server");
+        assert!(out.contains("  - 10.0.0.0/8\n"));
+    }
+
+    #[test]
+    fn reads_scalar_values_without_comments() {
+        assert_eq!(scalar_value("port: 8123 # custom"), "8123");
+        assert_eq!(scalar_value("basicAuthMode: true"), "true");
     }
 }

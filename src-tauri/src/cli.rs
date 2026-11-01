@@ -1,5 +1,5 @@
-//! `stlauncher.exe --cli <install|update|start|status>`: the same flows without the
-//! window, for testing and for people who like terminals after all.
+//! `stlauncher.exe --cli <install|update|check-update|self-update|discover|start|status>`:
+//! the same flows without the window, for testing and for people who like terminals after all.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,21 +12,28 @@ use crate::process::JobObject;
 use crate::reporter::CliReporter;
 use crate::server::{ServerManager, ServerState};
 use crate::state::{self, LauncherState};
-use crate::{logging, net};
+use crate::{commands, discover, download, logging, net, selfupdate};
 
 pub fn run(args: &[String]) -> i32 {
     attach_parent_console();
-    let paths = match Paths::detect() {
+    let base = match Paths::detect() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("ERROR: {e:#}");
             return 1;
         }
     };
-    let _ = paths.ensure_dirs();
-    logging::init(&paths.launcher_log(), true);
+    let _ = base.ensure_dirs();
+    logging::init(&base.launcher_log(), true);
+    let paths = LauncherState::load(&base).paths(&base);
     let job = JobObject::new().ok().map(Arc::new);
     let has = |flag: &str| args.iter().any(|a| a == flag);
+    let value_of = |flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
 
     let result: Result<()> = match args.first().map(String::as_str).unwrap_or("help") {
         "install" => {
@@ -34,46 +41,101 @@ pub fn run(args: &[String]) -> i32 {
                 lan_enabled: !has("--no-lan"),
                 create_shortcut: !has("--no-shortcut"),
                 add_firewall_rule: !has("--no-firewall"),
+                adopt_path: value_of("--adopt"),
             };
             let reporter = CliReporter::new("install");
-            installer::run_install(&paths, &opts, job.as_deref(), &reporter).map(|s| {
+            installer::run_install(&base, &opts, job.as_deref(), &reporter).map(|s| {
                 println!(
-                    "Installed SillyTavern {} with Node.js {}",
-                    s.st_version.unwrap_or_default(),
+                    "Set up SillyTavern {} ({:?}) at {} with Node.js {}",
+                    s.st_version.clone().unwrap_or_default(),
+                    s.mode,
+                    s.paths(&base).st_dir().display(),
                     s.node_version.unwrap_or_default()
                 );
             })
         }
         "update" => {
             let reporter = CliReporter::new("update");
-            installer::run_update(&paths, job.as_deref(), &|| {}, &reporter)
+            installer::run_update(&base, job.as_deref(), &|| {}, &reporter)
                 .map(|s| println!("Updated to SillyTavern {}", s.st_version.unwrap_or_default()))
         }
-        "check-update" => installer::check_update(&paths).map(|u| {
-            println!(
-                "installed: {}  latest: {}  update available: {}",
-                u.installed.unwrap_or_else(|| "(none)".into()),
-                u.latest,
-                u.available
-            );
-        }),
+        "check-update" => {
+            let report = commands::check_all_updates(&paths);
+            if let Some(u) = report.sillytavern {
+                println!(
+                    "sillytavern: installed={}  latest={}  available={}  method={}  {}",
+                    u.installed.unwrap_or_else(|| "(none)".into()),
+                    u.latest,
+                    u.available,
+                    u.method,
+                    u.detail.unwrap_or_default()
+                );
+            }
+            if let Some(u) = report.launcher {
+                println!(
+                    "launcher:    current={}  latest={}  available={}  sha256={}",
+                    u.current,
+                    u.latest,
+                    u.available,
+                    u.sha256.as_deref().unwrap_or("(none)")
+                );
+            }
+            for e in report.errors {
+                println!("error: {e}");
+            }
+            Ok(())
+        }
+        "self-update" => (|| -> Result<()> {
+            let client = download::client()?;
+            let update = selfupdate::check(&client)?;
+            if !update.available && !has("--force") {
+                println!("Launcher {} is already the latest.", update.current);
+                return Ok(());
+            }
+            let reporter = CliReporter::new("selfupdate");
+            let exe = selfupdate::apply(&paths, &update, &reporter)?;
+            println!("Installed launcher {} at {}", update.latest, exe.display());
+            Ok(())
+        })(),
+        "discover" => {
+            let managed = base.with_st_dir(None).st_dir();
+            let found = discover::discover(Some(&managed));
+            if found.is_empty() {
+                println!("No existing SillyTavern installs found.");
+            }
+            for f in found {
+                println!(
+                    "{}  version={}  git={}  branch={}  port={}  node_modules={}  data={}",
+                    f.path,
+                    f.version.unwrap_or_else(|| "?".into()),
+                    f.is_git,
+                    f.branch.unwrap_or_else(|| "-".into()),
+                    f.port,
+                    f.has_node_modules,
+                    f.has_data
+                );
+            }
+            Ok(())
+        }
         "start" => start_foreground(&paths, job),
         "status" => {
-            let st = LauncherState::load(&paths);
+            let st = LauncherState::load(&base);
             println!("home:        {}", paths.home.display());
+            println!("sillytavern: {} ({:?})", paths.st_dir().display(), st.mode);
             println!("installed:   {}", state::is_installed(&paths));
-            println!("sillytavern: {}", st.st_version.unwrap_or_else(|| "(none)".into()));
+            println!("version:     {}", st.st_version.unwrap_or_else(|| "(none)".into()));
             println!("node:        {}", st.node_version.unwrap_or_else(|| "(none)".into()));
+            println!("launcher:    {}", selfupdate::CURRENT_VERSION);
             println!("lan enabled: {}  port: {}", st.settings.lan_enabled, st.settings.port);
             println!("lan ips:     {:?}", net::lan_ips());
             println!("port open:   {}", net::port_open(st.settings.port));
             Ok(())
         }
         _ => {
-            println!("SillyTavern Launcher {}", env!("CARGO_PKG_VERSION"));
-            println!("usage: --cli install [--no-lan] [--no-shortcut] [--no-firewall]");
-            println!("       --cli update | check-update | start | status");
-            println!("env:   STLAUNCHER_HOME overrides the install folder");
+            println!("SillyTavern Launcher {}", selfupdate::CURRENT_VERSION);
+            println!("usage: --cli install [--adopt <folder>] [--no-lan] [--no-shortcut] [--no-firewall]");
+            println!("       --cli update | check-update | self-update [--force] | discover | start | status");
+            println!("env:   STLAUNCHER_HOME overrides the launcher folder");
             Ok(())
         }
     };

@@ -19,6 +19,23 @@ const COMMON_FLAGS: &[&str] = &[
     "--ignore-scripts",
 ];
 
+/// What Start.bat does on every launch: a no-save install that only touches what changed.
+/// Used for adopted installs so their node_modules is never torn down.
+pub fn run_npm_install(
+    paths: &Paths,
+    st_dir: &Path,
+    job: Option<&JobObject>,
+    reporter: &dyn Reporter,
+) -> Result<()> {
+    const STEP: &str = "deps";
+    reporter.step(STEP, StepStatus::Running, "Checking SillyTavern's packages...");
+    let status = run_npm(paths, st_dir, &["install", "--no-save"], job)?;
+    if !status.success() {
+        bail!("npm install failed ({status}). Open the log for details.");
+    }
+    Ok(())
+}
+
 /// Installs SillyTavern's dependencies into `st_dir` with the bundled npm.
 pub fn run_npm_ci(
     paths: &Paths,

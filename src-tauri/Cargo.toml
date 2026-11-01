@@ -1,6 +1,6 @@
 [package]
 name = "stlauncher"
-version = "0.1.0"
+version = "0.2.0"
 description = "One-click SillyTavern installer and launcher for Windows"
 edition = "2021"
 rust-version = "1.85"
@@ -34,6 +34,7 @@ local-ip-address = "0.6"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "native-tls", "json", "charset", "http2"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+rfd = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
