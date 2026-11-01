@@ -350,5 +350,18 @@
       }
     })();
   </script>
+
+  <!-- Ko-fi floating "Support me" bubble, coloured to match the page. -->
+  <script src="https://storage.ko-fi.com/cdn/scripts/overlay-widget.js"></script>
+  <script>
+    if (window.kofiWidgetOverlay) {
+      kofiWidgetOverlay.draw("trevorbrowndev", {
+        "type": "floating-chat",
+        "floating-chat.donateButton.text": "Support me",
+        "floating-chat.donateButton.background-color": "#f0a04b",
+        "floating-chat.donateButton.text-color": "#2a1a08"
+      });
+    }
+  </script>
 </body>
 </html>
