@@ -88,10 +88,6 @@ impl Paths {
         self.home.join("logs")
     }
 
-    pub fn launcher_log(&self) -> PathBuf {
-        self.logs().join("launcher.log")
-    }
-
     pub fn state_file(&self) -> PathBuf {
         self.home.join("launcher-state.json")
     }

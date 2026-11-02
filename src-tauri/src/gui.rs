@@ -8,12 +8,13 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
+use crate::logging::SessionKind;
 use crate::paths::Paths;
 use crate::process::JobObject;
 use crate::reporter::TaskSnapshot;
 use crate::server::ServerManager;
 use crate::state::{self, LauncherState};
-use crate::{commands, logging, selfupdate};
+use crate::{commands, crash, logging, selfupdate, sysinfo};
 
 pub struct AppState {
     paths: RwLock<Paths>,
@@ -40,7 +41,10 @@ pub fn run() {
     let minimized = std::env::args().any(|a| a == "--minimized");
     let base = Paths::detect().expect("could not determine the install folder");
     let _ = base.ensure_dirs();
-    logging::init(&base.launcher_log(), cfg!(debug_assertions));
+    // Lines are buffered until setup opens the file: a second launch that only hands off
+    // to the running launcher exits before that and leaves no log behind.
+    logging::init(&base.logs(), SessionKind::Gui, cfg!(debug_assertions));
+    crash::install_panic_hook(&base.logs());
     let state = LauncherState::load(&base);
     let paths = state.paths(&base);
     log::info!(
@@ -81,9 +85,13 @@ pub fn run() {
         }))
         .manage(app_state)
         .setup(move |app| {
+            let st = app.state::<AppState>();
+            logging::open_file();
+            crash::begin_session(&st.paths().logs());
+            log_environment(&st.paths());
             logging::attach_app(app.handle().clone());
             build_tray(app.handle())?;
-            let st = app.state::<AppState>();
+            watch_session_end(app.handle());
 
             let handle = app.handle().clone();
             st.server.set_notifier(Box::new(move |status| {
@@ -144,9 +152,78 @@ pub fn run() {
             commands::quit_app,
             commands::show_window,
             commands::ui_log,
+            commands::save_support_bundle,
+            commands::open_logs_folder,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running SillyTavern Launcher");
+        .build(tauri::generate_context!())
+        .expect("error while starting SillyTavern Launcher")
+        .run(|_app, event| {
+            // Every orderly exit (tray Quit, self-update restart) passes through here.
+            if let tauri::RunEvent::Exit = event {
+                crash::end_session("launcher exited");
+            }
+        });
+}
+
+/// The facts every bug report needs, at the top of each session log.
+fn log_environment(paths: &Paths) {
+    let state = LauncherState::load(paths);
+    log::info!(
+        "{}, WebView2 {}, exe {}",
+        sysinfo::windows_version(),
+        sysinfo::webview_version(),
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "?".to_string())
+    );
+    log::info!(
+        "installed={} sillytavern={} node={} settings: lan={} port={} open_browser={} check_updates={} keep_awake={}",
+        state::is_installed(paths),
+        state.st_version.as_deref().unwrap_or("-"),
+        state.node_version.as_deref().unwrap_or("-"),
+        state.settings.lan_enabled,
+        state.settings.port,
+        state.settings.open_browser_on_start,
+        state.settings.check_updates_on_start,
+        state.settings.keep_awake
+    );
+}
+
+/// Windows ends the process right after `WM_ENDSESSION` (sign-out, shutdown, restart, and
+/// Fast Startup's hibernate-style shutdown) without our quit path running. Hooking the main
+/// window (hidden windows get the broadcast too) closes the session marker so the next start
+/// does not report a crash that never happened.
+fn watch_session_end(app: &AppHandle) {
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+    let Some(window) = app.get_webview_window("main") else { return };
+    match window.hwnd() {
+        Ok(hwnd) => {
+            if !unsafe { SetWindowSubclass(hwnd, Some(session_end_proc), 1, 0) }.as_bool() {
+                log::warn!("could not watch for Windows shutdown; a shutdown may be reported as a crash");
+            }
+        }
+        Err(e) => log::warn!("no window handle to watch for Windows shutdown: {e}"),
+    }
+}
+
+unsafe extern "system" fn session_end_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _id: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{ENDSESSION_LOGOFF, WM_ENDSESSION};
+    if msg == WM_ENDSESSION && wparam.0 != 0 {
+        let logoff = (lparam.0 as u32) & ENDSESSION_LOGOFF != 0;
+        crash::end_session(if logoff {
+            "signing out of Windows"
+        } else {
+            "Windows is shutting down or restarting"
+        });
+    }
+    unsafe { windows::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
 pub fn show_main_window(app: &AppHandle) {
@@ -160,12 +237,16 @@ pub fn show_main_window(app: &AppHandle) {
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let open_item = MenuItem::with_id(app, "open", "Open SillyTavern in browser", true, None::<&str>)?;
     let show_item = MenuItem::with_id(app, "show", "Show launcher", true, None::<&str>)?;
+    // Also here, not only in the window: it has to work when the window itself is the problem.
+    let logs_item = MenuItem::with_id(app, "logs", "Save logs to Desktop (for troubleshooting)", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit (stops SillyTavern)", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[
             &open_item,
             &show_item,
+            &PredefinedMenuItem::separator(app)?,
+            &logs_item,
             &PredefinedMenuItem::separator(app)?,
             &quit_item,
         ],
@@ -178,6 +259,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().0.as_str() {
             "open" => commands::open_browser_now(app),
             "show" => show_main_window(app),
+            "logs" => commands::save_bundle_bg(app.clone()),
             "quit" => commands::quit(app.clone()),
             _ => {}
         })

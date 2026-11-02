@@ -87,7 +87,11 @@
         {#if !isInstall || app.status?.installed}
           <button class="btn" onclick={() => app.leaveTask()}>Back</button>
         {/if}
+        <button class="btn" disabled={app.savingLogs} onclick={() => app.saveLogs()}>
+          {app.savingLogs ? "Saving..." : "Save logs to Desktop"}
+        </button>
       </div>
+      <p class="tiny">If trying again doesn't help, save the logs and send the file to whoever is helping you.</p>
     </div>
   {/if}
 

@@ -16,7 +16,10 @@ use crate::reporter::{Reporter, StepStatus, TaskSnapshot, TauriReporter};
 use crate::selfupdate::{self, LauncherUpdate};
 use crate::server::{Connections, ServerState, ServerStatus, READY_TIMEOUT};
 use crate::state::{self, InstallMode, LauncherState, Settings};
-use crate::{awake, config, diagnose, discover, download, firewall, git, logging, net, shortcut, sillytavern};
+use crate::{
+    awake, config, crash, diagnose, discover, download, firewall, git, logging, net, shortcut, sillytavern,
+    support,
+};
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -206,8 +209,37 @@ pub fn quit(app: AppHandle) {
     std::thread::spawn(move || {
         let _ = app.state::<AppState>().server.stop();
         awake::set(false);
-        log::info!("launcher exiting");
+        crash::end_session("quit from the launcher");
         app.exit(0);
+    });
+}
+
+/// Builds the support zip on the Desktop and shows it in Explorer. Returns the toast text.
+fn save_bundle(app: &AppHandle) -> anyhow::Result<String> {
+    let st = app.state::<AppState>();
+    let path = support::create_bundle(&st.paths(), &st.server.status(), None)?;
+    support::reveal(&path);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let place = if dirs::desktop_dir().is_some_and(|d| path.starts_with(d)) {
+        "your Desktop".to_string()
+    } else {
+        path.parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    };
+    Ok(format!("Saved {name} to {place}. Send that file to whoever is helping you."))
+}
+
+/// The tray's "Save logs to Desktop": works even when the window is the broken part.
+pub fn save_bundle_bg(app: AppHandle) {
+    std::thread::spawn(move || {
+        if let Err(e) = save_bundle(&app) {
+            log::error!("could not save the log bundle: {e:#}");
+            let _ = open::that(app.state::<AppState>().paths().logs());
+        }
     });
 }
 
@@ -606,6 +638,8 @@ pub async fn start_self_update(app: AppHandle) -> Result<(), String> {
                     Ok(_) => {
                         reporter.step("restart", StepStatus::Done, "New launcher starting");
                         reporter.finished(true, None);
+                        // The new launcher waits for this pid to be gone before it reads the marker.
+                        crash::end_session("restarting into the updated launcher");
                         std::thread::sleep(Duration::from_millis(600));
                         app.exit(0);
                     }
@@ -689,9 +723,27 @@ pub async fn show_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Lets the webview leave breadcrumbs in launcher.log (what it rendered, which events it saw).
+/// Lets the webview leave breadcrumbs in the session log (what it rendered, which events it
+/// saw); `level: "error"` for uncaught errors and rejected promises.
 #[tauri::command]
-pub async fn ui_log(line: String) -> Result<(), String> {
-    log::info!("UI: {line}");
+pub async fn ui_log(line: String, level: Option<String>) -> Result<(), String> {
+    if level.as_deref() == Some("error") {
+        log::error!("UI error: {line}");
+    } else {
+        log::info!("UI: {line}");
+    }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn save_support_bundle(app: AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || save_bundle(&app).map_err(|e| format!("{e:#}")))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn open_logs_folder(app: AppHandle) -> Result<(), String> {
+    let dir = app.state::<AppState>().paths().logs();
+    open::that(&dir).map_err(|e| e.to_string())
 }

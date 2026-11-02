@@ -203,6 +203,12 @@ impl ServerManager {
             .current_dir(&st_dir)
             .env("PATH", process::prefixed_path(&paths.node_dir()))
             .env("NODE_ENV", "production")
+            // SillyTavern ships with `logging.minLogLevel: 0` (DEBUG), and at DEBUG it prints
+            // the whole request body of every generation: character cards, chat history,
+            // everything. Our log files (and the bundles friends send) must not carry that.
+            // INFO keeps what we parse: "New connection from" is info, "Blocked connection"
+            // is warn. Environment variables override config.yaml in SillyTavern's getConfigValue.
+            .env("SILLYTAVERN_LOGGING_MINLOGLEVEL", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

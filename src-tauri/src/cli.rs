@@ -1,4 +1,4 @@
-//! `stlauncher.exe --cli <install|update|check-update|self-update|discover|start|status>`:
+//! `stlauncher.exe --cli <install|update|check-update|self-update|discover|diagnose|takeover|logs|start|status>`:
 //! the same flows without the window, for testing and for people who like terminals after all.
 
 use std::sync::Arc;
@@ -7,12 +7,13 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::installer::{self, InstallOptions};
+use crate::logging::SessionKind;
 use crate::paths::Paths;
 use crate::process::JobObject;
 use crate::reporter::CliReporter;
-use crate::server::{ServerManager, ServerState};
+use crate::server::{ServerManager, ServerState, ServerStatus};
 use crate::state::{self, LauncherState};
-use crate::{commands, discover, download, logging, net, selfupdate};
+use crate::{commands, crash, discover, download, logging, net, selfupdate, support, sysinfo};
 
 pub fn run(args: &[String]) -> i32 {
     attach_parent_console();
@@ -24,7 +25,15 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
     let _ = base.ensure_dirs();
-    logging::init(&base.launcher_log(), true);
+    logging::init(&base.logs(), SessionKind::Cli, true);
+    crash::install_panic_hook(&base.logs());
+    logging::open_file();
+    log::info!(
+        "SillyTavern Launcher {} --cli {} ({})",
+        selfupdate::CURRENT_VERSION,
+        args.join(" "),
+        sysinfo::windows_version()
+    );
     let paths = LauncherState::load(&base).paths(&base);
     let job = JobObject::new().ok().map(Arc::new);
     let has = |flag: &str| args.iter().any(|a| a == flag);
@@ -139,19 +148,18 @@ pub fn run(args: &[String]) -> i32 {
                 server.stop()
             })
         }
+        "logs" => {
+            let settings = LauncherState::load(&base).settings;
+            let out = value_of("--out").map(std::path::PathBuf::from);
+            support::create_bundle(&paths, &observed_server(settings.port), out).map(|path| {
+                println!("Saved {}", path.display());
+            })
+        }
+        // Undocumented: proves the panic hook writes a crash report.
+        "crash-test" => panic!("crash-test requested from the command line"),
         "diagnose" => {
             let settings = LauncherState::load(&base).settings;
-            let server = crate::server::ServerStatus {
-                state: if net::port_open(settings.port) {
-                    crate::server::ServerState::Running
-                } else {
-                    crate::server::ServerState::Stopped
-                },
-                url: crate::server::local_url(settings.port),
-                message: None,
-                pid: None,
-                external: net::port_open(settings.port),
-            };
+            let server = observed_server(settings.port);
             let d = crate::diagnose::run(&paths, &settings, &server);
             for c in &d.checks {
                 println!("[{:<4}] {}{}", format!("{:?}", c.level).to_ascii_lowercase(), c.title, if c.detail.is_empty() { String::new() } else { format!(" -- {}", c.detail) });
@@ -179,6 +187,7 @@ pub fn run(args: &[String]) -> i32 {
             println!("SillyTavern Launcher {}", selfupdate::CURRENT_VERSION);
             println!("usage: --cli install [--adopt <folder>] [--no-lan] [--no-shortcut] [--no-firewall]");
             println!("       --cli update | check-update | self-update [--force] | discover | diagnose | takeover | start | status");
+            println!("       --cli logs [--out <folder>]   zip of recent logs + crash reports (default: Desktop)");
             println!("env:   STLAUNCHER_HOME overrides the launcher folder");
             Ok(())
         }
@@ -190,6 +199,19 @@ pub fn run(args: &[String]) -> i32 {
             eprintln!("ERROR: {e:#}");
             1
         }
+    }
+}
+
+/// What a CLI run can tell about the server without owning it: something answers on the
+/// port or not (whoever started it, it is "external" to this process).
+fn observed_server(port: u16) -> ServerStatus {
+    let open = net::port_open(port);
+    ServerStatus {
+        state: if open { ServerState::Running } else { ServerState::Stopped },
+        url: crate::server::local_url(port),
+        message: None,
+        pid: None,
+        external: open,
     }
 }
 

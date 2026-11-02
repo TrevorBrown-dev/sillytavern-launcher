@@ -8,6 +8,7 @@ mod awake;
 mod cli;
 mod commands;
 mod config;
+mod crash;
 mod diagnose;
 mod discover;
 mod download;
@@ -27,6 +28,8 @@ mod server;
 mod shortcut;
 mod sillytavern;
 mod state;
+mod support;
+mod sysinfo;
 
 pub fn run() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();

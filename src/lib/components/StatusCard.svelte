@@ -65,6 +65,7 @@
     {/if}
     {#if server.state === "error"}
       <button class="btn" onclick={() => app.repairInstall()}>Repair installation</button>
+      <button class="btn" disabled={app.savingLogs} onclick={() => app.saveLogs()}>Save logs to Desktop</button>
     {/if}
   </div>
   <p class="tiny">

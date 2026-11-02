@@ -71,6 +71,7 @@ class AppStore {
   diagnosis = $state<Diagnosis | null>(null);
   diagnosing = $state(false);
   fixing = $state<FixId | null>(null);
+  savingLogs = $state(false);
   lastInstallOptions = $state<InstallOptions>({
     lanEnabled: true,
     createShortcut: true,
@@ -286,6 +287,20 @@ class AppStore {
       this.showToast(errorText(e), 6000);
     } finally {
       this.fixing = null;
+    }
+  }
+
+  /** "Save logs to Desktop": the zip a friend sends when something is wrong. */
+  async saveLogs() {
+    if (this.savingLogs) return;
+    this.savingLogs = true;
+    try {
+      this.showToast(await api.saveSupportBundle(), 8000);
+    } catch (e) {
+      this.showToast(`Could not save the logs: ${errorText(e)}`, 8000);
+      void api.openLogsFolder().catch(() => undefined);
+    } finally {
+      this.savingLogs = false;
     }
   }
 

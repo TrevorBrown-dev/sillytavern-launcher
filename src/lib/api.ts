@@ -184,8 +184,13 @@ export const api = {
   createShortcuts: () => invoke<string>("create_shortcuts"),
   addFirewallRule: () => invoke<string>("add_firewall_rule"),
   quit: () => invoke<void>("quit_app"),
-  /** Breadcrumbs into launcher.log; never throws. */
+  /** Zips recent logs + crash reports onto the Desktop and shows it in Explorer; resolves with a message. */
+  saveSupportBundle: () => invoke<string>("save_support_bundle"),
+  openLogsFolder: () => invoke<void>("open_logs_folder"),
+  /** Breadcrumbs into the session log; never throws. */
   uiLog: (line: string) => invoke<void>("ui_log", { line }).catch(() => undefined),
+  /** Uncaught errors from the webview, logged at error level; never throws. */
+  uiError: (line: string) => invoke<void>("ui_log", { line, level: "error" }).catch(() => undefined),
 };
 
 export const events = {

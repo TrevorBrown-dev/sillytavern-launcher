@@ -36,9 +36,28 @@ Everything lives under `%LOCALAPPDATA%\SillyTavern\`:
   node\                      portable Node.js
   SillyTavern\               the app; user content is in SillyTavern\data\
   npm-cache\
-  logs\launcher.log
+  logs\                      launcher-<time>.log per run, cli-<time>.log, crash-<time>-*.txt
   launcher-state.json        versions + launcher settings
 ```
+
+## When a friend says "it doesn't work"
+
+Ask them for the log zip. **Save logs to Desktop** sits in Maintenance, on the install/update error screen, next to "Repair installation" when the server fails, and in the tray icon's right-click menu (that one works even when the window is the broken part). It writes `SillyTavern-Launcher-logs-<time>.zip` to their Desktop and opens Explorer with it selected so they can drag it into Discord. If the launcher will not open at all: Win+R, `%LOCALAPPDATA%\SillyTavern\logs`, send the newest files.
+
+What is in the zip:
+
+- `summary.txt`: launcher, Windows and WebView2 versions, install mode and folder, SillyTavern and Node versions, launcher settings, server state, the `config.yaml` flags that matter (listen, whitelist mode and entries, basic auth on/off, user accounts, port), every network address with its adapter, what is listening on the port, and the full phone-access diagnosis.
+- `logs/`: the newest 6 session logs (at most 30 MB before compression). Each session log starts with the Windows/WebView2 versions, the exe path and the settings. Uncaught errors from the webview land there too, as `UI error:` lines.
+- `crashes/`: every crash report on disk.
+
+What is never in it: `config.yaml` itself (basic-auth credentials), `secrets.json`, anything from SillyTavern's `data` folder, and chats. The user's profile path is rewritten to `%USERPROFILE%` and other `Users\<name>\` segments to `Users\<user>\`. SillyTavern's account-reset codes are blanked.
+
+How the logging works:
+
+- **One file per run.** The GUI writes `launcher-YYYYMMDD-HHMMSS.log`, `--cli` runs write `cli-...log`, and a file past 10 MB rolls over to `.2.log`, `.3.log`. Lines are buffered until the GUI knows it is the single instance, so double-clicking the shortcut while it runs leaves no stub file.
+- **Retention** runs at every start: the newest 20 session logs stay, but nothing older than 30 days beyond the newest 5, and at most 64 MB in all. Crash reports: newest 10, nothing older than 90 days beyond the newest 3. Anything else in the folder is left alone. The single `launcher.log` older versions wrote is deleted on the first start of 0.4.0, because it could contain whole chats (see below).
+- **Crash reports.** A panic hook writes `crash-<time>-panic.txt` with the message, the source location (`src\file.rs:line:col`), the thread and the last 200 log lines; release builds ship without a PDB, so the location is what pins it down. On top of that the GUI keeps a `logs\session.json` marker that is removed on Quit, on self-update and on `WM_ENDSESSION` (sign-out and shutdown, Fast Startup included). If the marker is still there at the next start, the previous run died without any of those (native crash, Task Manager, killed), and `crash-<time>-unclean-exit.txt` gets the tail of that run's log. If Windows booted after that run started, it was a restart or power loss and only gets a line in the new log.
+- **SillyTavern runs at INFO.** Out of the box SillyTavern logs at DEBUG, and at DEBUG it prints the entire request body of every generation (system prompt, character card, chat history) to its console, which the launcher captures. The launcher starts it with `SILLYTAVERN_LOGGING_MINLOGLEVEL=1`; environment variables override `config.yaml`, so this holds for adopted installs too. The two lines the phone card parses survive: "New connection from" is INFO and "Blocked connection from" is WARN. Someone who wants SillyTavern's debug output can still run `Start.bat`.
 
 ## Building
 
@@ -81,6 +100,8 @@ $env:STLAUNCHER_HOME = "D:\scratch\st-home"
 .\release\SillyTavern Launcher.exe --cli check-update # SillyTavern (git or release) and the launcher itself
 .\release\SillyTavern Launcher.exe --cli update
 .\release\SillyTavern Launcher.exe --cli self-update [--force]
+.\release\SillyTavern Launcher.exe --cli logs [--out D:\scratch]   # the support zip (default: Desktop)
+.\release\SillyTavern Launcher.exe --cli crash-test   # deliberate panic: proves crash reports get written
 ```
 
 Launching the exe with the same variable set opens the GUI against that folder. Debug builds keep a console window; release builds are GUI-subsystem and reattach to the parent console for `--cli`.
@@ -121,7 +142,10 @@ src-tauri/src/
   download.rs     streaming download with progress + retries, sha256
   archive.rs      zip extraction that strips the top-level folder
   reporter.rs     step/progress events (Tauri + CLI implementations)
-  logging.rs      file + ring buffer + live event logger
+  logging.rs      per-session log files + retention, ring buffer, live event logger
+  crash.rs        panic hook and the session marker that catches unclean exits
+  support.rs      "Save logs to Desktop" zip: summary, recent logs, crash reports, redaction
+  sysinfo.rs      Windows / WebView2 versions, boot time
   state.rs        launcher-state.json
   paths.rs        all paths derived from the install root
   cli.rs          --cli subcommands
@@ -141,6 +165,7 @@ Releasing a new launcher version: bump `version` in `src-tauri/tauri.conf.json`,
 - **CLI flags plus config.yaml.** The server is started with `--listen=<bool> --browserLaunchEnabled=false --port N`, so the launcher's settings always win even if the user edits `config.yaml`, while the whitelist (which has no CLI flag) lives in the file.
 - **Node 24 pinned by major.** `node::PREFERRED_MAJOR` picks the newest patch of that line; bump it when SillyTavern's `engines.node` moves. Falls back to the newest LTS if that line disappears from the index.
 - **Updates never delete first.** The new version is fully installed into `SillyTavern.new` before anything is renamed, and `SillyTavern.old` is only removed after the swap succeeded.
+- **Passive logs before feedback forms.** Friends report problems to Trevor directly, so the launcher only has to make the evidence easy to hand over: per-run logs, crash reports, a one-click zip. No telemetry, nothing is sent anywhere by the app. An in-app report form or an upload endpoint is the next step only if direct reports get out of hand.
 - **Adopt, don't import.** Long-time users often have gigabytes of chats and characters; copying them is slow and leaves two diverging installs. Running their folder in place keeps one source of truth, and the launcher's footprint there is limited to things `Start.bat` already does plus whitelist entries. Updates respect their branch instead of forcing the release zip onto a git checkout.
 
 ## Known limitations

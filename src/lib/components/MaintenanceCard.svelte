@@ -107,6 +107,24 @@
     <button class="btn" disabled={picking} onclick={useDifferentFolder}>Use a different SillyTavern folder...</button>
   </div>
 
+  <div class="help">
+    <div>
+      <strong>Something not working?</strong>
+      <span class="muted small">
+        Saves a zip with the launcher's recent logs to your Desktop. Send it to whoever is helping you. It never
+        contains your chats, characters or passwords.
+      </span>
+    </div>
+    <div class="help-actions">
+      <button class="btn" disabled={app.savingLogs} onclick={() => app.saveLogs()}>
+        {app.savingLogs ? "Saving..." : "Save logs to Desktop"}
+      </button>
+      <button class="link" onclick={() => api.openLogsFolder().catch((e) => app.showToast(errorText(e)))}>
+        Open logs folder
+      </button>
+    </div>
+  </div>
+
   {#if app.updates}
     <div class="update-box">
       {#if stUpdateText}
@@ -163,6 +181,49 @@
 
   .location code {
     word-break: break-all;
+  }
+
+  .help {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px 16px;
+  }
+
+  .help > div:first-child {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 260px;
+    min-width: 0;
+  }
+
+  .help-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .link {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--muted);
+    font: inherit;
+    font-size: 13px;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .link:hover {
+    color: var(--text);
   }
 
   .update-box {
